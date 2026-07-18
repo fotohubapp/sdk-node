@@ -1,13 +1,16 @@
-import type { ChatChunk } from "./types.js";
+import type { ChatStreamChunk } from "./types.js";
 import { FotoHubError, NetworkError } from "./errors.js";
 
 /**
- * Parses Server-Sent Events (SSE) from a ReadableStream into ChatChunk objects.
- * Returns an AsyncIterable that yields parsed chunks.
+ * Parses Server-Sent Events (SSE) from a ReadableStream into ChatStreamChunk objects.
+ * Returns an AsyncIterable that yields parsed chunks as they arrive.
+ *
+ * @param response - The raw fetch Response with SSE body
+ * @returns AsyncIterable of parsed ChatStreamChunk objects
  */
 export async function* parseSSEStream(
   response: Response
-): AsyncIterable<ChatChunk> {
+): AsyncIterable<ChatStreamChunk> {
   if (!response.body) {
     throw new NetworkError("Response body is null — streaming not supported");
   }
@@ -41,7 +44,7 @@ export async function* parseSSEStream(
 
         const chunk = parseSSEEvent(event);
         if (chunk === null) {
-          // [DONE] signal
+          // [DONE] signal — stream complete
           return;
         }
         if (chunk) {
@@ -55,10 +58,10 @@ export async function* parseSSEStream(
 }
 
 /**
- * Parse a single SSE event string into a ChatChunk.
- * Returns null for [DONE] signal, undefined for non-data events.
+ * Parse a single SSE event string into a ChatStreamChunk.
+ * Returns null for the [DONE] signal, undefined for non-data events.
  */
-function parseSSEEvent(event: string): ChatChunk | null | undefined {
+function parseSSEEvent(event: string): ChatStreamChunk | null | undefined {
   const lines = event.split("\n");
   let data = "";
 
@@ -79,7 +82,7 @@ function parseSSEEvent(event: string): ChatChunk | null | undefined {
   }
 
   try {
-    const parsed = JSON.parse(data) as ChatChunk;
+    const parsed = JSON.parse(data) as ChatStreamChunk;
     return parsed;
   } catch {
     throw new FotoHubError(
@@ -90,22 +93,45 @@ function parseSSEEvent(event: string): ChatChunk | null | undefined {
 }
 
 /**
- * ChatStream wraps an AsyncIterable<ChatChunk> with convenience methods.
- * Provides both async iteration and helper methods for common patterns.
+ * ChatStream wraps an AsyncIterable<ChatStreamChunk> with convenience methods.
+ * Implements AsyncIterable so it can be used directly in `for await...of` loops,
+ * and provides helper methods for common patterns like collecting full text.
+ *
+ * @example
+ * ```typescript
+ * const stream = await client.chatStream({ messages: [...] });
+ *
+ * // Option 1: iterate over raw chunks
+ * for await (const chunk of stream) {
+ *   const content = chunk.choices[0]?.delta.content;
+ *   if (content) process.stdout.write(content);
+ * }
+ *
+ * // Option 2: collect full text
+ * const text = await stream.toText();
+ *
+ * // Option 3: iterate text fragments only
+ * for await (const fragment of stream.textStream()) {
+ *   process.stdout.write(fragment);
+ * }
+ * ```
  */
-export class ChatStream implements AsyncIterable<ChatChunk> {
-  private readonly source: AsyncIterable<ChatChunk>;
+export class ChatStream implements AsyncIterable<ChatStreamChunk> {
+  private readonly source: AsyncIterable<ChatStreamChunk>;
 
-  constructor(source: AsyncIterable<ChatChunk>) {
+  constructor(source: AsyncIterable<ChatStreamChunk>) {
     this.source = source;
   }
 
-  [Symbol.asyncIterator](): AsyncIterator<ChatChunk> {
+  [Symbol.asyncIterator](): AsyncIterator<ChatStreamChunk> {
     return this.source[Symbol.asyncIterator]();
   }
 
   /**
    * Collect all text content from the stream into a single string.
+   * Consumes the entire stream.
+   *
+   * @returns The complete generated text
    */
   async toText(): Promise<string> {
     let text = "";
@@ -121,6 +147,9 @@ export class ChatStream implements AsyncIterable<ChatChunk> {
 
   /**
    * Iterate over text fragments only (convenience over raw chunks).
+   * Yields only non-empty content strings.
+   *
+   * @returns AsyncIterable of text fragments
    */
   async *textStream(): AsyncIterable<string> {
     for await (const chunk of this.source) {

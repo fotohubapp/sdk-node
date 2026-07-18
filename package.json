@@ -1,6 +1,6 @@
 {
   "name": "fotohub",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Official TypeScript SDK for the FOTOhub AI Platform \u2014 image, video, music generation, chat/LLM, translation, and storage.",
   "author": "FOTOhub <dev@fotohub.app>",
   "license": "MIT",

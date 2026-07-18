@@ -2,6 +2,7 @@ import type { ApiError } from "./types.js";
 
 /**
  * Base error class for all FOTOhub SDK errors.
+ * All SDK errors extend this class, making it easy to catch any SDK-related error.
  */
 export class FotoHubError extends Error {
   public readonly code: string;
@@ -26,6 +27,9 @@ export class FotoHubError extends Error {
     }
   }
 
+  /**
+   * Create a FotoHubError from an API error response object.
+   */
   static fromApiError(apiError: ApiError, statusCode?: number): FotoHubError {
     return new FotoHubError(
       apiError.message,
@@ -38,6 +42,7 @@ export class FotoHubError extends Error {
 
 /**
  * Thrown when the API returns a 401 Unauthorized response.
+ * Usually means the API key is missing, invalid, or expired.
  */
 export class AuthenticationError extends FotoHubError {
   constructor(message: string = "Invalid or missing API key") {
@@ -48,6 +53,7 @@ export class AuthenticationError extends FotoHubError {
 
 /**
  * Thrown when the API returns a 403 Forbidden response.
+ * The API key is valid but lacks the required permissions/scopes.
  */
 export class PermissionError extends FotoHubError {
   constructor(
@@ -70,6 +76,7 @@ export class NotFoundError extends FotoHubError {
 
 /**
  * Thrown when the API returns a 429 Too Many Requests response.
+ * Check the `retryAfter` property for the recommended wait time.
  */
 export class RateLimitError extends FotoHubError {
   public readonly retryAfter: number | undefined;
@@ -82,7 +89,8 @@ export class RateLimitError extends FotoHubError {
 }
 
 /**
- * Thrown when the user has insufficient credits for the operation.
+ * Thrown when the user has insufficient credits for the operation (HTTP 402).
+ * Contains information about the credits required vs available.
  */
 export class InsufficientCreditsError extends FotoHubError {
   public readonly creditsRequired: number | undefined;
@@ -105,6 +113,7 @@ export class InsufficientCreditsError extends FotoHubError {
 
 /**
  * Thrown when the API returns a 422 Unprocessable Entity response.
+ * Usually means the request body failed validation.
  */
 export class ValidationError extends FotoHubError {
   public readonly fieldErrors: Record<string, string[]> | undefined;
@@ -120,7 +129,7 @@ export class ValidationError extends FotoHubError {
 }
 
 /**
- * Thrown when a request times out.
+ * Thrown when a request times out before receiving a response.
  */
 export class TimeoutError extends FotoHubError {
   constructor(message: string = "Request timed out") {
@@ -131,6 +140,7 @@ export class TimeoutError extends FotoHubError {
 
 /**
  * Thrown when a network error occurs (no response received).
+ * This could be DNS failure, connection refused, etc.
  */
 export class NetworkError extends FotoHubError {
   public readonly cause: Error | undefined;
@@ -156,12 +166,12 @@ export class ServerError extends FotoHubError {
 }
 
 /**
- * Thrown when a video generation job fails.
+ * Thrown when an async generation job (video, music) fails.
  */
 export class JobFailedError extends FotoHubError {
   public readonly jobId: string;
 
-  constructor(jobId: string, message: string = "Video generation job failed") {
+  constructor(jobId: string, message: string = "Generation job failed") {
     super(message, "job_failed", undefined, { jobId });
     this.name = "JobFailedError";
     this.jobId = jobId;
@@ -169,7 +179,7 @@ export class JobFailedError extends FotoHubError {
 }
 
 /**
- * Thrown when waiting for a video job exceeds the maximum wait time.
+ * Thrown when waiting for an async job exceeds the maximum wait time.
  */
 export class JobTimeoutError extends FotoHubError {
   public readonly jobId: string;
@@ -181,5 +191,21 @@ export class JobTimeoutError extends FotoHubError {
     super(message, "job_timeout", undefined, { jobId });
     this.name = "JobTimeoutError";
     this.jobId = jobId;
+  }
+}
+
+/**
+ * Thrown when a webhook delivery or test fails.
+ */
+export class WebhookError extends FotoHubError {
+  public readonly webhookId: string;
+
+  constructor(
+    webhookId: string,
+    message: string = "Webhook delivery failed"
+  ) {
+    super(message, "webhook_error", undefined, { webhookId });
+    this.name = "WebhookError";
+    this.webhookId = webhookId;
   }
 }
