@@ -2,18 +2,18 @@
   <img src="https://static.fotohub.app/brand/fotohub-logo-dark.png" alt="FOTOhub" width="280" />
 </p>
 
-<h1 align="center">@fotohub/sdk</h1>
+<h1 align="center">fotohub</h1>
 
 <p align="center">
   <strong>Official TypeScript SDK for the FOTOhub AI Platform</strong>
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/@fotohub/sdk"><img src="https://img.shields.io/npm/v/@fotohub/sdk.svg?style=flat-square&color=0070f3" alt="npm version" /></a>
-  <a href="https://www.npmjs.com/package/@fotohub/sdk"><img src="https://img.shields.io/npm/dm/@fotohub/sdk.svg?style=flat-square&color=0070f3" alt="npm downloads" /></a>
+  <a href="https://www.npmjs.com/package/fotohub"><img src="https://img.shields.io/npm/v/fotohub.svg?style=flat-square&color=0070f3" alt="npm version" /></a>
+  <a href="https://www.npmjs.com/package/fotohub"><img src="https://img.shields.io/npm/dm/fotohub.svg?style=flat-square&color=0070f3" alt="npm downloads" /></a>
   <a href="https://github.com/fotohubapp/sdk-node"><img src="https://img.shields.io/badge/TypeScript-5.4+-3178c6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript" /></a>
-  <a href="https://bundlephobia.com/package/@fotohub/sdk"><img src="https://img.shields.io/bundlephobia/minzip/@fotohub/sdk?style=flat-square&color=0070f3&label=bundle%20size" alt="Bundle Size" /></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/npm/l/@fotohub/sdk?style=flat-square&color=0070f3" alt="License: MIT" /></a>
+  <a href="https://bundlephobia.com/package/fotohub"><img src="https://img.shields.io/bundlephobia/minzip/fotohub?style=flat-square&color=0070f3&label=bundle%20size" alt="Bundle Size" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/npm/l/fotohub?style=flat-square&color=0070f3" alt="License: MIT" /></a>
 </p>
 
 <p align="center">
@@ -45,25 +45,19 @@
 ## Installation
 
 ```bash
-npm install @fotohub/sdk
+npm install fotohub
 ```
 
 ```bash
-pnpm add @fotohub/sdk
+pnpm add fotohub
 ```
 
 ```bash
-yarn add @fotohub/sdk
+yarn add fotohub
 ```
 
 ```bash
-bun add @fotohub/sdk
-```
-
-Or install directly from GitHub:
-
-```bash
-npm install fotohubapp/sdk-node
+bun add fotohub
 ```
 
 > Requires Node.js 18+ (or any runtime with a global `fetch` implementation).
@@ -73,7 +67,7 @@ npm install fotohubapp/sdk-node
 ## Quick Start
 
 ```typescript
-import { FotoHub } from "@fotohub/sdk";
+import { FotoHub } from "fotohub";
 
 const client = new FotoHub({
   apiKey: process.env.FOTOHUB_API_KEY!,
@@ -383,7 +377,7 @@ console.log(s3.credentials.secretAccessKey);
 ## Configuration
 
 ```typescript
-import { FotoHub } from "@fotohub/sdk";
+import { FotoHub } from "fotohub";
 
 const client = new FotoHub({
   // Required
@@ -432,7 +426,7 @@ import {
   ServerError,
   JobFailedError,
   JobTimeoutError,
-} from "@fotohub/sdk";
+} from "fotohub";
 
 try {
   const result = await client.generateImage({ prompt: "..." });
@@ -581,7 +575,7 @@ import type {
   UsageResult,
   Bucket,
   PresignedUrl,
-} from "@fotohub/sdk";
+} from "fotohub";
 ```
 
 ---
@@ -637,7 +631,7 @@ npm run typecheck
 - [Get API Key](https://fotohub.app/settings/api)
 - [Platform](https://fotohub.app)
 - [GitHub](https://github.com/fotohubapp/sdk-node)
-- [npm](https://www.npmjs.com/package/@fotohub/sdk)
+- [npm](https://www.npmjs.com/package/fotohub)
 
 ---
 

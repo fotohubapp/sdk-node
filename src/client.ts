@@ -60,7 +60,7 @@ const USER_AGENT = `fotohub-sdk-node/${SDK_VERSION}`;
  *
  * @example
  * ```typescript
- * import { FotoHub } from "@fotohub/sdk";
+ * import { FotoHub } from "fotohub";
  *
  * const client = new FotoHub({ apiKey: "your-api-key" });
  * const result = await client.generateImage({ prompt: "A sunset over mountains" });

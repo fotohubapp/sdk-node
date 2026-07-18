@@ -1,5 +1,5 @@
 /**
- * @fotohub/sdk — Official TypeScript SDK for the FOTOhub AI Platform.
+ * fotohub — Official TypeScript SDK for the FOTOhub AI Platform.
  *
  * Provides access to image generation, video generation, music generation,
  * chat/LLM completions, translation, intent orchestration, usage analytics,
@@ -7,7 +7,7 @@
  *
  * @example
  * ```typescript
- * import { FotoHub } from "@fotohub/sdk";
+ * import { FotoHub } from "fotohub";
  *
  * const client = new FotoHub({ apiKey: process.env.FOTOHUB_API_KEY! });
  *
