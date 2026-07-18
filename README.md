@@ -60,6 +60,12 @@ yarn add @fotohub/sdk
 bun add @fotohub/sdk
 ```
 
+Or install directly from GitHub:
+
+```bash
+npm install fotohubapp/sdk-node
+```
+
 > Requires Node.js 18+ (or any runtime with a global `fetch` implementation).
 
 ---
