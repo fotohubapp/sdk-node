@@ -1,0 +1,59 @@
+{
+  "name": "@fotohub/sdk",
+  "version": "1.0.0",
+  "description": "Official TypeScript SDK for the FOTOhub AI Platform — image, video, music generation, chat/LLM, translation, and storage.",
+  "author": "FOTOhub <dev@fotohub.app>",
+  "license": "MIT",
+  "homepage": "https://fotohub.app",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fotohubapp/sdk-node.git"
+  },
+  "keywords": [
+    "fotohub",
+    "ai",
+    "image-generation",
+    "video-generation",
+    "music-generation",
+    "llm",
+    "chat",
+    "sdk",
+    "typescript"
+  ],
+  "type": "module",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/esm/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json",
+    "build:esm": "tsc -p tsconfig.json",
+    "build:cjs": "tsc -p tsconfig.cjs.json",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}
