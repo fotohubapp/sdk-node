@@ -52,6 +52,14 @@ import type {
   TierComparison,
   WalletInfo,
   EnterpriseApplication,
+  GabrielClassifyOptions,
+  GabrielResult,
+  GabrielSuggestOptions,
+  GabrielSuggestion,
+  GabrielRecommendOptions,
+  GabrielRecommendation,
+  TranslateOptions,
+  TranslateResult,
 } from "./types.js";
 
 import {
@@ -1574,6 +1582,143 @@ export class FotoHub {
       path: "/v1/tiers/enterprise/apply",
       body: application,
       requiresAuth: true,
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // GABRIEL AI ORCHESTRATOR
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Classify user intent and route to the optimal platform feature using Gabriel AI.
+   *
+   * @param options - Classification parameters (prompt, language, context)
+   * @returns Routing decision with model selection, tips, and credit estimate
+   *
+   * @example
+   * ```typescript
+   * const result = await client.gabrielClassify({
+   *   prompt: "Generate a cinematic photo of a sunset",
+   *   language: "en",
+   *   enhance_prompt: true,
+   * });
+   * console.log(result.target); // "/generate/image"
+   * console.log(result.model_selected); // "seedream-5-0-260128"
+   * ```
+   */
+  async gabrielClassify(options: GabrielClassifyOptions): Promise<GabrielResult> {
+    const body: Record<string, unknown> = {
+      prompt: options.prompt,
+    };
+
+    if (options.language !== undefined) body.language = options.language;
+    if (options.context !== undefined) body.context = options.context;
+    if (options.enhance_prompt !== undefined) body.enhance_prompt = options.enhance_prompt;
+
+    return await this.request<GabrielResult>({
+      method: "POST",
+      path: "/v1/ai/gabriel",
+      body,
+      requiresAuth: true,
+    });
+  }
+
+  /**
+   * Get lightweight autocomplete suggestions as the user types.
+   * No authentication required. Responds in <50ms.
+   *
+   * @param options - Partial input with tab/page context
+   * @returns Array of ranked suggestions
+   *
+   * @example
+   * ```typescript
+   * const suggestions = await client.gabrielSuggest({
+   *   partial: "portrait photo",
+   *   tab: "image",
+   *   page: "/generate/new",
+   * });
+   * ```
+   */
+  async gabrielSuggest(options: GabrielSuggestOptions): Promise<GabrielSuggestion[]> {
+    const body: Record<string, unknown> = {
+      partial: options.partial,
+    };
+
+    if (options.tab !== undefined) body.tab = options.tab;
+    if (options.page !== undefined) body.page = options.page;
+
+    const result = await this.request<{ suggestions: GabrielSuggestion[] }>({
+      method: "POST",
+      path: "/v1/ai/gabriel/suggest",
+      body,
+      requiresAuth: false,
+    });
+
+    return result.suggestions;
+  }
+
+  /**
+   * Get proactive context-aware recommendations based on user state.
+   * No authentication required. Template-based (<100ms response).
+   *
+   * @param options - Context (page, credits, brand status)
+   * @returns Array of contextual recommendations
+   *
+   * @example
+   * ```typescript
+   * const recs = await client.gabrielRecommend({
+   *   page: "/generate/new",
+   *   credits_remaining: 5,
+   *   has_brand: false,
+   * });
+   * ```
+   */
+  async gabrielRecommend(options: GabrielRecommendOptions = {}): Promise<GabrielRecommendation[]> {
+    const body: Record<string, unknown> = {};
+
+    if (options.page !== undefined) body.page = options.page;
+    if (options.credits_remaining !== undefined) body.credits_remaining = options.credits_remaining;
+    if (options.has_brand !== undefined) body.has_brand = options.has_brand;
+    if (options.recent_actions !== undefined) body.recent_actions = options.recent_actions;
+
+    const result = await this.request<{ recommendations: GabrielRecommendation[] }>({
+      method: "POST",
+      path: "/v1/ai/gabriel/recommend",
+      body,
+      requiresAuth: false,
+    });
+
+    return result.recommendations;
+  }
+
+  /**
+   * Translate text between languages.
+   *
+   * @param options - Translation parameters
+   * @returns Translated text with metadata
+   *
+   * @example
+   * ```typescript
+   * const result = await client.translate({
+   *   text: "Hello world",
+   *   target_language: "pl",
+   * });
+   * console.log(result.translated_text); // "Witaj świecie"
+   * ```
+   */
+  async translate(options: TranslateOptions): Promise<TranslateResult> {
+    const body: Record<string, unknown> = {
+      text: options.text,
+      target_language: options.target_language,
+    };
+
+    if (options.source_language !== undefined) body.source_language = options.source_language;
+
+    return await this.request<TranslateResult>({
+      method: "POST",
+      path: "/v1/ai/translate",
+      body,
+      requiresAuth: false,
     });
   }
 

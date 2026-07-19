@@ -876,6 +876,125 @@ export interface Model {
   credit_cost: number;
 }
 
+// ─── Gabriel AI Orchestrator ────────────────────────────────────────────────
+
+export interface GabrielClassifyOptions {
+  /** Natural language request (max 1000 chars) */
+  prompt: string;
+  /** Language code (default: "en") */
+  language?: string;
+  /** Additional context for better classification */
+  context?: GabrielContext;
+  /** Enrich prompt with model-specific knowledge */
+  enhance_prompt?: boolean;
+}
+
+export interface GabrielContext {
+  /** User's subscription tier */
+  user_tier?: string;
+  /** Current credit balance */
+  credits_remaining?: number;
+  /** Last 5 features the user used */
+  recent_tools?: string[];
+  /** Active brand kit ID */
+  brand_id?: string;
+}
+
+export interface GabrielResult {
+  /** Action type */
+  action: "route" | "answer" | "workflow" | "error";
+  /** Feature path to navigate to */
+  target?: string;
+  /** Pre-configured parameters */
+  params?: Record<string, unknown>;
+  /** Selected model */
+  model_selected?: string;
+  /** Alternative suggestions */
+  suggested_actions?: Array<{ label: string; target: string }>;
+  /** Classification confidence (0-1) */
+  confidence?: number;
+  /** Estimated credit cost */
+  credits_estimated?: number;
+  /** Contextual tips */
+  tips?: string[];
+  /** Direct answer text (when action is "answer") */
+  answer?: string;
+}
+
+export interface GabrielStreamEvent {
+  /** Event type */
+  type: "thinking" | "routing" | "result" | "error";
+  /** Status or content */
+  content?: string;
+  /** Tool being called (routing event) */
+  tool?: string;
+  /** Final routing result fields (result event) */
+  target?: string;
+  params?: Record<string, unknown>;
+  model_selected?: string;
+  tips?: string[];
+}
+
+export interface GabrielSuggestOptions {
+  /** Partial user input (min 2 chars) */
+  partial: string;
+  /** Tab context */
+  tab?: "all" | "image" | "video" | "audio" | "chat";
+  /** Current page path */
+  page?: string;
+}
+
+export interface GabrielSuggestion {
+  /** Suggestion text */
+  text: string;
+  /** Category */
+  category: "prompt" | "tip" | "model" | "feature";
+  /** Navigation target */
+  target?: string;
+  /** Icon identifier */
+  icon?: string | null;
+}
+
+export interface GabrielRecommendOptions {
+  /** Current page path */
+  page?: string;
+  /** User's credit balance */
+  credits_remaining?: number;
+  /** Whether user has a brand kit */
+  has_brand?: boolean;
+  /** Last few actions taken */
+  recent_actions?: string[];
+}
+
+export interface GabrielRecommendation {
+  /** Recommendation text */
+  text: string;
+  /** Navigation target */
+  target: string;
+  /** Icon identifier */
+  icon: string;
+}
+
+export interface TranslateOptions {
+  /** Text to translate (max 10,000 chars) */
+  text: string;
+  /** Target language code */
+  target_language: string;
+  /** Source language (auto-detected if omitted) */
+  source_language?: string;
+}
+
+export interface TranslateResult {
+  /** Translated text */
+  translated_text: string;
+  /** Detected/specified source language */
+  source_language: string;
+  /** Target language */
+  target_language: string;
+  /** Character count */
+  character_count: number;
+}
+
 // ─── Internal Types ──────────────────────────────────────────────────────────
 
 export interface RequestOptions {
