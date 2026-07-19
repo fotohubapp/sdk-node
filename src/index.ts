@@ -154,6 +154,27 @@ export type {
   WebhookLog,
 } from "./types.js";
 
+// Types — 3D Generation
+export type {
+  Generate3DOptions,
+  ThreeDResult,
+  ThreeDModelInfo,
+  ThreeDPollOptions,
+  ThreeDGenerationOptions,
+} from "./types.js";
+
+// Types — Tier Management
+export type {
+  TierCatalog,
+  TierCatalogEntry,
+  TierInfo,
+  TierLimits,
+  TierUsage,
+  TierComparison,
+  WalletInfo,
+  EnterpriseApplication,
+} from "./types.js";
+
 // Types — Models
 export type { Model } from "./types.js";
 

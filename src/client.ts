@@ -43,6 +43,15 @@ import type {
   WebhookTestResult,
   WebhookLog,
   Model,
+  Generate3DOptions,
+  ThreeDResult,
+  ThreeDModelInfo,
+  ThreeDPollOptions,
+  TierCatalog,
+  TierInfo,
+  TierComparison,
+  WalletInfo,
+  EnterpriseApplication,
 } from "./types.js";
 
 import {
@@ -67,7 +76,7 @@ const DEFAULT_TIMEOUT = 60_000;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_IMAGE_MODEL = "seedream-5-0-260128";
 
-const SDK_VERSION = "1.2.0";
+const SDK_VERSION = "1.3.0";
 const USER_AGENT = `fotohub-sdk-node/${SDK_VERSION}`;
 
 /**
@@ -1284,10 +1293,298 @@ export class FotoHub {
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 3D GENERATION
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Generate a 3D model from an image or text prompt.
+   *
+   * @param options - 3D generation parameters
+   * @returns 3D result with download URL and billing info
+   *
+   * @example
+   * ```typescript
+   * const result = await client.generate3D({
+   *   mode: "image-to-3d",
+   *   model: "triposr",
+   *   image: base64EncodedImage,
+   *   format: "glb",
+   * });
+   * console.log(result.url); // GLB file URL
+   * ```
+   */
+  async generate3D(options: Generate3DOptions): Promise<ThreeDResult> {
+    const body: Record<string, unknown> = {
+      mode: options.mode,
+      model: options.model,
+    };
+
+    if (options.image !== undefined) body.image_base64 = options.image;
+    if (options.prompt !== undefined) body.prompt = options.prompt;
+    if (options.quality !== undefined) body.quality = options.quality;
+    if (options.format !== undefined) body.format = options.format;
+    if (options.options !== undefined) body.options = options.options;
+
+    return await this.request<ThreeDResult>({
+      method: "POST",
+      path: "/v1/ai/generate/3d",
+      body,
+      requiresAuth: true,
+      timeout: 120_000,
+    });
+  }
+
+  /**
+   * Check the status of a 3D generation job.
+   *
+   * @param jobId - The generation ID returned from `generate3D()`
+   * @returns Current status and result if completed
+   *
+   * @example
+   * ```typescript
+   * const status = await client.get3DStatus("gen_abc123");
+   * if (status.status === "completed") {
+   *   console.log(status.url);
+   * }
+   * ```
+   */
+  async get3DStatus(jobId: string): Promise<ThreeDResult> {
+    return await this.request<ThreeDResult>({
+      method: "GET",
+      path: `/v1/ai/generate/3d/${encodeURIComponent(jobId)}`,
+      requiresAuth: true,
+    });
+  }
+
+  /**
+   * Wait for a 3D generation job to complete, polling at intervals.
+   *
+   * @param jobId - The generation ID returned from `generate3D()`
+   * @param options - Polling configuration
+   * @returns Completed 3D result with download URL
+   *
+   * @example
+   * ```typescript
+   * const gen = await client.generate3D({ mode: "text-to-3d", model: "shap-e", prompt: "a castle" });
+   * const completed = await client.waitFor3D(gen.id, {
+   *   onProgress: (r) => console.log(`Status: ${r.status}`),
+   * });
+   * console.log(completed.url);
+   * ```
+   */
+  async waitFor3D(jobId: string, options: ThreeDPollOptions = {}): Promise<ThreeDResult> {
+    const pollInterval = options.pollInterval ?? 3_000;
+    const maxWait = options.maxWait ?? 120_000;
+    const startTime = Date.now();
+
+    while (true) {
+      const elapsed = Date.now() - startTime;
+      if (elapsed >= maxWait) {
+        throw new JobTimeoutError(
+          jobId,
+          `3D generation job ${jobId} timed out after ${Math.round(maxWait / 1000)}s`
+        );
+      }
+
+      const result = await this.get3DStatus(jobId);
+
+      if (options.onProgress) {
+        options.onProgress(result);
+      }
+
+      if (result.status === "completed") {
+        return result;
+      }
+
+      if (result.status === "failed") {
+        throw new JobFailedError(jobId, `3D generation job ${jobId} failed`);
+      }
+
+      await this.sleep(pollInterval);
+    }
+  }
+
+  /**
+   * List available 3D generation models with their capabilities and pricing.
+   *
+   * @returns Array of 3D models with costs and capabilities
+   *
+   * @example
+   * ```typescript
+   * const models = await client.list3DModels();
+   * for (const m of models) {
+   *   console.log(`${m.name}: ${m.credits} credits (${m.speed})`);
+   * }
+   * ```
+   */
+  async list3DModels(): Promise<ThreeDModelInfo[]> {
+    return await this.request<ThreeDModelInfo[]>({
+      method: "GET",
+      path: "/v1/ai/generate/3d/models",
+      requiresAuth: true,
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // TIER MANAGEMENT
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Get the full tier catalog with all available tiers and their features.
+   *
+   * @returns Tier catalog with all PAYG and subscription tiers
+   *
+   * @example
+   * ```typescript
+   * const catalog = await client.getTierCatalog();
+   * for (const tier of catalog.tiers) {
+   *   console.log(`${tier.name}: ${tier.rpm} rpm, ${tier.credits_monthly} credits/mo`);
+   * }
+   * ```
+   */
+  async getTierCatalog(): Promise<TierCatalog> {
+    return await this.request<TierCatalog>({
+      method: "GET",
+      path: "/v1/tiers/catalog",
+      requiresAuth: false,
+    });
+  }
+
+  /**
+   * Get the current user's tier, limits, and usage.
+   *
+   * @returns Current tier info with rate limits and usage stats
+   *
+   * @example
+   * ```typescript
+   * const tier = await client.getCurrentTier();
+   * console.log(`Tier: ${tier.name} (${tier.limits.rpm} rpm)`);
+   * console.log(`Credits used: ${tier.usage.credits_used}`);
+   * ```
+   */
+  async getCurrentTier(): Promise<TierInfo> {
+    return await this.request<TierInfo>({
+      method: "GET",
+      path: "/v1/tiers/current",
+      requiresAuth: true,
+    });
+  }
+
+  /**
+   * Compare all tiers side-by-side, highlighting the current tier.
+   *
+   * @returns Comparison data with current tier indicator
+   *
+   * @example
+   * ```typescript
+   * const comparison = await client.compareTiers();
+   * console.log(`Current: ${comparison.current}`);
+   * ```
+   */
+  async compareTiers(): Promise<TierComparison> {
+    return await this.request<TierComparison>({
+      method: "GET",
+      path: "/v1/tiers/compare",
+      requiresAuth: true,
+    });
+  }
+
+  /**
+   * Subscribe to a tier (returns a checkout URL for payment).
+   *
+   * @param tierSlug - The tier slug to subscribe to (e.g. "sub-developer", "sub-startup")
+   * @returns Checkout URL to complete the subscription
+   *
+   * @example
+   * ```typescript
+   * const { checkout_url } = await client.subscribeTier("sub-developer");
+   * // Redirect user to checkout_url
+   * ```
+   */
+  async subscribeTier(tierSlug: string): Promise<{ checkout_url: string }> {
+    return await this.request<{ checkout_url: string }>({
+      method: "POST",
+      path: "/v1/tiers/subscribe",
+      body: { tier: tierSlug },
+      requiresAuth: true,
+    });
+  }
+
+  /**
+   * Get the current wallet balance and spending info.
+   *
+   * @returns Wallet balance, currency, and lifetime spend
+   *
+   * @example
+   * ```typescript
+   * const wallet = await client.getWallet();
+   * console.log(`Balance: ${wallet.balance} ${wallet.currency}`);
+   * ```
+   */
+  async getWallet(): Promise<WalletInfo> {
+    return await this.request<WalletInfo>({
+      method: "GET",
+      path: "/v1/tiers/wallet",
+      requiresAuth: true,
+    });
+  }
+
+  /**
+   * Top up the wallet balance (returns a payment session URL).
+   *
+   * @param amount - Amount in PLN to add
+   * @returns Payment session URL
+   *
+   * @example
+   * ```typescript
+   * const { session_url } = await client.topupWallet(100);
+   * // Redirect user to session_url for payment
+   * ```
+   */
+  async topupWallet(amount: number): Promise<{ session_url: string }> {
+    return await this.request<{ session_url: string }>({
+      method: "POST",
+      path: "/v1/tiers/wallet/topup",
+      body: { amount },
+      requiresAuth: true,
+    });
+  }
+
+  /**
+   * Submit an enterprise tier application.
+   *
+   * @param application - Enterprise application details
+   * @returns Application ID for tracking
+   *
+   * @example
+   * ```typescript
+   * const { id } = await client.applyEnterprise({
+   *   company_name: "Acme Corp",
+   *   contact_email: "api@acme.com",
+   *   expected_usage: "50,000+ generations/month",
+   *   use_case: "E-commerce product photography at scale",
+   * });
+   * console.log(`Application submitted: ${id}`);
+   * ```
+   */
+  async applyEnterprise(application: EnterpriseApplication): Promise<{ id: string; status: string }> {
+    return await this.request<{ id: string; status: string }>({
+      method: "POST",
+      path: "/v1/tiers/enterprise/apply",
+      body: application,
+      requiresAuth: true,
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // MODELS
+  // ═══════════════════════════════════════════════════════════════════════════
+
   /**
    * List available AI models, optionally filtered by category.
    *
-   * @param category - Optional filter: "image", "video", "music", "chat", "speech", "stability"
+   * @param category - Optional filter: "image", "video", "music", "chat", "speech", "stability", "3d"
    * @returns Array of available models with pricing
    *
    * @example

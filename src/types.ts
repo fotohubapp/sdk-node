@@ -688,6 +688,177 @@ export interface ApiError {
   details?: Record<string, unknown>;
 }
 
+// ─── 3D Generation ──────────────────────────────────────────────────────────
+
+export interface Generate3DOptions {
+  /** Generation mode */
+  mode: "image-to-3d" | "text-to-3d";
+  /** 3D model to use */
+  model: "triposr" | "sf3d" | "shap-e" | "trellis" | "hunyuan3d";
+  /** Base64-encoded image (required for image-to-3d) */
+  image?: string;
+  /** Text prompt (required for text-to-3d) */
+  prompt?: string;
+  /** Output quality */
+  quality?: "draft" | "standard" | "high";
+  /** Output file format */
+  format?: "glb" | "obj" | "stl" | "usdz";
+  /** Additional generation options */
+  options?: ThreeDGenerationOptions;
+}
+
+export interface ThreeDGenerationOptions {
+  /** Whether to generate textures */
+  texture?: boolean;
+  /** Whether to generate PBR materials */
+  pbr?: boolean;
+  /** Whether to simplify the mesh */
+  simplify?: boolean;
+  /** Target polygon count (if simplify is true) */
+  target_polys?: number;
+}
+
+export interface ThreeDResult {
+  /** Generation ID */
+  id: string;
+  /** Download URL for the 3D model file */
+  url: string;
+  /** Output format */
+  format: string;
+  /** Model used */
+  model: string;
+  /** Current status */
+  status: "queued" | "processing" | "completed" | "failed";
+  /** Thumbnail preview URL */
+  thumbnail_url?: string;
+  /** Polygon count */
+  poly_count?: number;
+  /** File size in bytes */
+  file_size?: number;
+  /** Billing information */
+  billing: BillingInfo;
+}
+
+export interface ThreeDModelInfo {
+  /** Model ID */
+  id: string;
+  /** Display name */
+  name: string;
+  /** Description */
+  description: string;
+  /** Credit cost per generation */
+  credits: number;
+  /** Approximate generation time */
+  speed: string;
+  /** Supported modes */
+  mode: "image-to-3d" | "text-to-3d" | "both";
+  /** Whether currently available */
+  available: boolean;
+  /** Quality rating (1-5) */
+  quality: number;
+}
+
+export interface ThreeDPollOptions {
+  /** Polling interval in milliseconds. Defaults to 3000 (3s) */
+  pollInterval?: number;
+  /** Maximum time to wait in milliseconds. Defaults to 120000 (2 min) */
+  maxWait?: number;
+  /** Callback for status updates */
+  onProgress?: (result: ThreeDResult) => void;
+}
+
+// ─── Tier Management ────────────────────────────────────────────────────────
+
+export interface TierCatalogEntry {
+  /** Tier slug identifier */
+  slug: string;
+  /** Display name */
+  name: string;
+  /** Tier type */
+  type: "payg" | "subscription";
+  /** Monthly price in PLN (0 for PAYG) */
+  price_monthly: number;
+  /** Monthly credit allowance (-1 for unlimited) */
+  credits_monthly: number;
+  /** Requests per minute limit */
+  rpm: number;
+  /** Daily request quota */
+  daily_quota: number;
+  /** Features included */
+  features: string[];
+  /** Qualification requirements (for PAYG auto-resolution) */
+  requirements?: string;
+}
+
+export interface TierCatalog {
+  /** Available tiers */
+  tiers: TierCatalogEntry[];
+}
+
+export interface TierInfo {
+  /** Current tier slug */
+  tier: string;
+  /** Tier display name */
+  name: string;
+  /** Tier type */
+  type: "payg" | "subscription";
+  /** Current rate limits */
+  limits: TierLimits;
+  /** Current period usage */
+  usage: TierUsage;
+}
+
+export interface TierLimits {
+  /** Requests per minute */
+  rpm: number;
+  /** Daily request quota */
+  daily_quota: number;
+  /** Monthly credits (-1 for unlimited) */
+  credits_monthly: number;
+  /** 4-hour burst allowance */
+  burst_4h: number;
+}
+
+export interface TierUsage {
+  /** Requests made in current minute */
+  rpm_used: number;
+  /** Requests made today */
+  daily_used: number;
+  /** Credits used this period */
+  credits_used: number;
+}
+
+export interface TierComparison {
+  /** Current tier slug */
+  current: string;
+  /** All tiers with comparison data */
+  tiers: TierCatalogEntry[];
+}
+
+export interface WalletInfo {
+  /** Current balance in PLN */
+  balance: number;
+  /** Currency code */
+  currency: string;
+  /** Lifetime spend */
+  lifetime_spend: number;
+  /** Auto-topup enabled */
+  auto_topup: boolean;
+}
+
+export interface EnterpriseApplication {
+  /** Company name */
+  company_name: string;
+  /** Contact email */
+  contact_email: string;
+  /** Expected monthly usage */
+  expected_usage: string;
+  /** Use case description */
+  use_case: string;
+  /** Additional notes */
+  notes?: string;
+}
+
 // ─── Models ──────────────────────────────────────────────────────────────────
 
 export interface Model {
@@ -695,7 +866,7 @@ export interface Model {
   id: string;
   /** Display name */
   name: string;
-  /** Model category (image, video, music, chat, speech, stability) */
+  /** Model category (image, video, music, chat, speech, stability, 3d) */
   category: string;
   /** Provider name */
   provider: string;
