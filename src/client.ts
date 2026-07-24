@@ -18,6 +18,7 @@ import type {
   TranscriptionResult,
   ChatOptions,
   ChatResult,
+  ChatClaudeOptions,
   ChatBedrockOptions,
   AnalyzeImageOptions,
   AnalysisResult,
@@ -84,7 +85,7 @@ const DEFAULT_TIMEOUT = 60_000;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_IMAGE_MODEL = "seedream-5-0-260128";
 
-const SDK_VERSION = "1.3.0";
+const SDK_VERSION = "1.4.0";
 const USER_AGENT = `fotohub-sdk-node/${SDK_VERSION}`;
 
 /**
@@ -229,23 +230,21 @@ export class FotoHub {
   }
 
   /**
-   * Generate a video from a text prompt. Videos are generated asynchronously.
-   * Use `waitForVideo()` to poll until completion.
+   * Generate a video from a text prompt. This call is synchronous — it resolves
+   * once the video is ready, and the returned result already contains
+   * `video_url`. There is no separate job to poll.
    *
    * @param options - Video generation parameters
-   * @returns Video result with job_id for polling, or completed video_url
+   * @returns Completed video result with `video_url`
    *
    * @example
    * ```typescript
-   * const result = await client.generateVideo({
+   * const video = await client.generateVideo({
    *   prompt: "A drone flying over a forest at sunset",
    *   model: "veo-2",
    *   duration: 5,
    *   aspect_ratio: "16:9",
    * });
-   *
-   * // Poll until complete
-   * const video = await client.waitForVideo(result.job_id!);
    * console.log(video.video_url);
    * ```
    */
@@ -430,7 +429,7 @@ export class FotoHub {
 
     return await this.request<ChatResult>({
       method: "POST",
-      path: "/v1/ai/chat",
+      path: "/v1/ai/chat/completions",
       body,
       requiresAuth: true,
     });
@@ -465,7 +464,7 @@ export class FotoHub {
 
     const response = await this.rawRequest({
       method: "POST",
-      path: "/v1/ai/chat",
+      path: "/v1/ai/chat/completions",
       body,
       requiresAuth: true,
       stream: true,
@@ -476,14 +475,14 @@ export class FotoHub {
   }
 
   /**
-   * Create a chat completion via AWS Bedrock models (Claude, Nova).
+   * Create a chat completion via a premium Claude (Anthropic) model.
    *
-   * @param options - Bedrock chat parameters
-   * @returns Chat response from Bedrock model
+   * @param options - Claude chat parameters
+   * @returns Chat response from the Claude model
    *
    * @example
    * ```typescript
-   * const response = await client.chatBedrock({
+   * const response = await client.chatClaude({
    *   messages: [{ role: "user", content: "Summarize this document" }],
    *   model: "claude-sonnet-4.6",
    *   system: "You are a helpful summarizer.",
@@ -492,7 +491,7 @@ export class FotoHub {
    * console.log(response.choices[0].message.content);
    * ```
    */
-  async chatBedrock(options: ChatBedrockOptions): Promise<ChatResult> {
+  async chatClaude(options: ChatClaudeOptions): Promise<ChatResult> {
     const messages = options.system
       ? [{ role: "system" as const, content: options.system }, ...options.messages]
       : options.messages;
@@ -508,10 +507,18 @@ export class FotoHub {
 
     return await this.request<ChatResult>({
       method: "POST",
-      path: "/v1/ai/chat/bedrock",
+      path: "/v1/ai/chat/claude",
       body,
       requiresAuth: true,
     });
+  }
+
+  /**
+   * @deprecated Use {@link chatClaude} instead. This method will be removed in
+   * a future release.
+   */
+  async chatBedrock(options: ChatBedrockOptions): Promise<ChatResult> {
+    return await this.chatClaude(options);
   }
 
   /**
@@ -593,7 +600,7 @@ export class FotoHub {
   async listStabilityTools(): Promise<StabilityTool[]> {
     return await this.request<StabilityTool[]>({
       method: "GET",
-      path: "/v1/ai/stability/tools",
+      path: "/stability/tools",
       requiresAuth: true,
     });
   }
@@ -601,7 +608,7 @@ export class FotoHub {
   /**
    * Run a specific Stability AI tool by ID with custom options.
    *
-   * @param toolId - The tool identifier (e.g. "upscale-fast", "remove-background")
+   * @param toolId - The tool identifier (e.g. "fast-upscale", "remove-background")
    * @param options - Tool-specific options including input image
    * @returns Processed image result
    *
@@ -615,7 +622,6 @@ export class FotoHub {
    */
   async runStabilityTool(toolId: string, options: StabilityOptions): Promise<StabilityResult> {
     const body: Record<string, unknown> = {
-      tool_id: toolId,
       image: options.image,
     };
 
@@ -633,7 +639,7 @@ export class FotoHub {
 
     return await this.request<StabilityResult>({
       method: "POST",
-      path: "/v1/ai/stability/run",
+      path: `/stability/${encodeURIComponent(toolId)}`,
       body,
       requiresAuth: true,
     });
@@ -656,7 +662,7 @@ export class FotoHub {
     imageBase64: string,
     type: "fast" | "creative" | "conservative" = "fast"
   ): Promise<StabilityResult> {
-    return await this.runStabilityTool(`upscale-${type}`, { image: imageBase64 });
+    return await this.runStabilityTool(`${type}-upscale`, { image: imageBase64 });
   }
 
   /**
@@ -687,7 +693,7 @@ export class FotoHub {
    * ```
    */
   async stabilityErase(imageBase64: string, maskBase64: string): Promise<StabilityResult> {
-    return await this.runStabilityTool("erase", { image: imageBase64, mask: maskBase64 });
+    return await this.runStabilityTool("erase-object", { image: imageBase64, mask: maskBase64 });
   }
 
   /**
@@ -761,7 +767,7 @@ export class FotoHub {
     searchPrompt: string,
     replacePrompt: string
   ): Promise<StabilityResult> {
-    return await this.runStabilityTool("search-and-replace", {
+    return await this.runStabilityTool("search-replace", {
       image: imageBase64,
       search_prompt: searchPrompt,
       prompt: replacePrompt,
@@ -788,7 +794,7 @@ export class FotoHub {
     searchPrompt: string,
     newColor: string
   ): Promise<StabilityResult> {
-    return await this.runStabilityTool("recolor", {
+    return await this.runStabilityTool("search-recolor", {
       image: imageBase64,
       search_prompt: searchPrompt,
       prompt: newColor,
@@ -921,7 +927,7 @@ export class FotoHub {
     if (projectId !== undefined) body.project_id = projectId;
 
     return await this.request<OverageResult>({
-      method: "POST",
+      method: "PUT",
       path: "/v1/billing/overage-limit",
       body,
       requiresAuth: true,
@@ -953,11 +959,12 @@ export class FotoHub {
    * Purchase a credit top-up package. Returns a checkout URL for payment.
    *
    * @param packageSlug - The slug of the package to purchase
+   *   (e.g. "topup-50", "topup-100", "topup-250", "topup-500", "topup-1000", "topup-5000")
    * @returns Checkout session with payment URL
    *
    * @example
    * ```typescript
-   * const topup = await client.createTopup("credits-500");
+   * const topup = await client.createTopup("topup-500");
    * // Redirect user to topup.checkout_url for payment
    * ```
    */
@@ -965,7 +972,7 @@ export class FotoHub {
     return await this.request<TopupResult>({
       method: "POST",
       path: "/v1/billing/topup",
-      body: { package_slug: packageSlug },
+      body: { package: packageSlug },
       requiresAuth: true,
     });
   }
@@ -1064,7 +1071,7 @@ export class FotoHub {
   async listWebhooks(): Promise<Webhook[]> {
     return await this.request<Webhook[]>({
       method: "GET",
-      path: "/v1/webhooks",
+      path: "/v1/console/webhooks",
       requiresAuth: true,
     });
   }
@@ -1097,7 +1104,7 @@ export class FotoHub {
 
     return await this.request<Webhook>({
       method: "POST",
-      path: "/v1/webhooks",
+      path: "/v1/console/webhooks",
       body,
       requiresAuth: true,
     });
@@ -1129,7 +1136,7 @@ export class FotoHub {
 
     return await this.request<Webhook>({
       method: "PATCH",
-      path: `/v1/webhooks/${encodeURIComponent(webhookId)}`,
+      path: `/v1/console/webhooks/${encodeURIComponent(webhookId)}`,
       body,
       requiresAuth: true,
     });
@@ -1148,7 +1155,7 @@ export class FotoHub {
   async deleteWebhook(webhookId: string): Promise<void> {
     await this.request<void>({
       method: "DELETE",
-      path: `/v1/webhooks/${encodeURIComponent(webhookId)}`,
+      path: `/v1/console/webhooks/${encodeURIComponent(webhookId)}`,
       requiresAuth: true,
     });
   }
@@ -1170,7 +1177,7 @@ export class FotoHub {
   async testWebhook(webhookId: string): Promise<WebhookTestResult> {
     return await this.request<WebhookTestResult>({
       method: "POST",
-      path: `/v1/webhooks/${encodeURIComponent(webhookId)}/test`,
+      path: `/v1/console/webhooks/${encodeURIComponent(webhookId)}/test`,
       requiresAuth: true,
     });
   }
@@ -1192,7 +1199,7 @@ export class FotoHub {
   async getWebhookLogs(webhookId: string): Promise<WebhookLog[]> {
     return await this.request<WebhookLog[]>({
       method: "GET",
-      path: `/v1/webhooks/${encodeURIComponent(webhookId)}/logs`,
+      path: `/v1/console/webhooks/${encodeURIComponent(webhookId)}/logs`,
       requiresAuth: true,
     });
   }
@@ -1243,62 +1250,31 @@ export class FotoHub {
   }
 
   /**
-   * Poll a video generation job until it completes, fails, or times out.
+   * Return a finished video result.
    *
-   * @param jobId - The job_id returned from `generateVideo()`
-   * @param options - Polling options (interval, timeout, progress callback)
-   * @returns Completed video result with video_url
-   * @throws {JobFailedError} If the job fails or is cancelled
-   * @throws {JobTimeoutError} If maxWait is exceeded
+   * @deprecated Video generation is synchronous — `generateVideo()` already
+   * returns the finished `video_url`, so there is no job to poll. This method
+   * now simply returns the result from `generateVideo()` unchanged, and will be
+   * removed in a future release.
+   *
+   * @param result - The result returned by `generateVideo()`
+   * @param options - Ignored (kept for backwards compatibility)
+   * @returns The finished video result
    *
    * @example
    * ```typescript
    * const video = await client.generateVideo({ prompt: "Ocean waves" });
-   * const completed = await client.waitForVideo(video.job_id!, {
-   *   pollInterval: 3000,
-   *   maxWait: 300_000,
-   *   onProgress: (v) => console.log(`Status: ${v.status}`),
-   * });
-   * console.log(completed.video_url);
+   * console.log(video.video_url);
    * ```
    */
-  async waitForVideo(jobId: string, options: PollOptions = {}): Promise<VideoResult> {
-    const pollInterval = options.pollInterval ?? 5_000;
-    const maxWait = options.maxWait ?? 600_000;
-    const startTime = Date.now();
-
-    while (true) {
-      const elapsed = Date.now() - startTime;
-      if (elapsed >= maxWait) {
-        throw new JobTimeoutError(
-          jobId,
-          `Video job ${jobId} timed out after ${Math.round(maxWait / 1000)}s`
-        );
-      }
-
-      const result = await this.request<VideoResult>({
-        method: "GET",
-        path: `/v1/ai/generate/video/${encodeURIComponent(jobId)}`,
-        requiresAuth: true,
-      });
-
-      if (options.onProgress) {
-        options.onProgress(result);
-      }
-
-      if (result.status === "completed") {
-        return result;
-      }
-
-      if (result.status === "failed" || result.status === "cancelled") {
-        throw new JobFailedError(
-          jobId,
-          `Video job ${jobId} ${result.status}`
-        );
-      }
-
-      await this.sleep(pollInterval);
+  async waitForVideo(result: VideoResult, _options: PollOptions = {}): Promise<VideoResult> {
+    if (result && typeof result === "object") {
+      return result;
     }
+    throw new ValidationError(
+      "waitForVideo() no longer accepts a job_id: video generation is synchronous. " +
+        "Pass the result returned by generateVideo() (or just read its video_url)."
+    );
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

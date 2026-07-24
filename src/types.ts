@@ -262,10 +262,10 @@ export interface ChatOptions {
   presence_penalty?: number;
 }
 
-export interface ChatBedrockOptions {
+export interface ChatClaudeOptions {
   /** Array of messages in the conversation */
   messages: ChatMessage[];
-  /** Model ID (e.g. claude-sonnet-4.6, claude-haiku-4.5, nova-pro, nova-lite, nova-micro) */
+  /** Model ID (e.g. claude-sonnet-4.6, claude-haiku-4.5) */
   model?: string;
   /** Temperature (0.0-1.0) */
   temperature?: number;
@@ -274,6 +274,12 @@ export interface ChatBedrockOptions {
   /** System message */
   system?: string;
 }
+
+/**
+ * @deprecated Use {@link ChatClaudeOptions} instead. Retained as an alias for
+ * backwards compatibility and will be removed in a future release.
+ */
+export type ChatBedrockOptions = ChatClaudeOptions;
 
 export interface ChatMessage {
   /** Role of the message sender */
@@ -491,25 +497,23 @@ export interface OverageResult {
 }
 
 export interface TopupPackage {
-  /** Package slug identifier */
+  /** Package slug identifier (e.g. "topup-100") */
   slug: string;
-  /** Display name */
+  /** Display name (e.g. "100 PLN") */
   name: string;
-  /** Price in PLN */
-  price_pln: number;
-  /** Credits included */
-  credits: number;
-  /** Bonus credits (if any) */
-  bonus?: number;
+  /** Charge amount in PLN */
+  amount_pln: number;
+  /** Bonus credits granted on purchase */
+  bonus_credits: number;
+  /** Bonus percentage */
+  bonus_pct: number;
 }
 
 export interface TopupResult {
-  /** Payment session ID or URL */
-  session_id: string;
-  /** Checkout URL to redirect user */
+  /** Stripe checkout URL to redirect the user to */
   checkout_url: string;
-  /** Package purchased */
-  package_slug: string;
+  /** The purchased package descriptor */
+  package: TopupPackage;
 }
 
 export interface TransactionOptions {

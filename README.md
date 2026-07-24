@@ -140,42 +140,20 @@ const result = await client.generateImage({
 
 ### Video Generation
 
-Video generation is asynchronous. Start a job, then poll for completion.
+Video generation is synchronous — the call resolves once the video is ready and
+the result already contains `video_url`.
 
 ```typescript
-// Start the generation job
-const job = await client.generateVideo({
+const video = await client.generateVideo({
   prompt: "A drone flying over a misty forest at sunrise",
   duration: 5,
-  aspectRatio: "16:9",
+  aspect_ratio: "16:9",
   resolution: "1080p",
 });
 
-console.log(job.jobId);  // "vid_abc123..."
-console.log(job.status); // "queued"
-
-// Wait for completion with progress updates
-const video = await client.waitForVideo(job.jobId, {
-  pollInterval: 5_000,   // Check every 5 seconds
-  maxWait: 600_000,      // Timeout after 10 minutes
-  onProgress: (status) => {
-    console.log(`Status: ${status.status} | Progress: ${status.progress}%`);
-  },
-});
-
-console.log(video.videoUrl);    // Final video URL
-console.log(video.duration);    // Duration in seconds
-console.log(video.creditsUsed); // Credits consumed
-```
-
-#### Manual Status Polling
-
-```typescript
-const status = await client.getVideoJob(job.jobId);
-
-if (status.status === "completed") {
-  // Fetch the final result
-}
+console.log(video.video_url);    // Final video URL
+console.log(video.duration);     // Duration in seconds
+console.log(video.credits_used); // Credits consumed
 ```
 
 ---
@@ -470,11 +448,11 @@ try {
     console.error(`Server error (${error.statusCode}):`, error.message);
 
   } else if (error instanceof JobFailedError) {
-    // Async generation job failed
+    // Async generation job failed (e.g. waitFor3D)
     console.error(`Job ${error.jobId} failed:`, error.message);
 
   } else if (error instanceof JobTimeoutError) {
-    // waitForVideo() exceeded maxWait
+    // waitFor3D() exceeded maxWait
     console.error(`Job ${error.jobId} timed out`);
 
   } else if (error instanceof FotoHubError) {
@@ -553,28 +531,24 @@ The SDK is written in TypeScript and exports all types for full IntelliSense sup
 ```typescript
 import type {
   FotoHubConfig,
-  ImageGenerateParams,
+  GenerateImageOptions,
   ImageResult,
-  ImageOutput,
-  VideoGenerateParams,
-  VideoJob,
+  ImageMetadata,
+  GenerateVideoOptions,
   VideoResult,
-  VideoWaitOptions,
-  MusicGenerateParams,
+  GenerateMusicOptions,
   MusicResult,
-  ChatParams,
+  ChatOptions,
   ChatMessage,
-  ChatCompletion,
-  ChatChunk,
+  ChatResult,
+  ChatStreamChunk,
   ChatStream,
-  GabrielParams,
-  GabrielResponse,
-  TranslateParams,
-  TranslateResult,
-  UsageParams,
-  UsageResult,
-  Bucket,
-  PresignedUrl,
+  ChatClaudeOptions,
+  BillingBalance,
+  TransactionPage,
+  StabilityTool,
+  StabilityResult,
+  Webhook,
 } from "fotohub";
 ```
 
@@ -585,20 +559,20 @@ import type {
 | Method | Description | Auth Required |
 |--------|-------------|:---:|
 | `generateImage(params)` | Generate images from a text prompt | Yes |
-| `generateVideo(params)` | Start an async video generation job | Yes |
-| `waitForVideo(jobId, options?)` | Poll until video job completes | Yes |
-| `getVideoJob(jobId)` | Get video job status | Yes |
+| `generateVideo(params)` | Generate a video (synchronous — returns `video_url`) | Yes |
 | `generateMusic(params)` | Generate music from a text description | Yes |
+| `generateSpeech(params)` | Text-to-speech synthesis | Yes |
+| `transcribe(params)` | Transcribe audio to text | Yes |
 | `chat(params)` | Create a chat completion | Yes |
-| `streamChat(params)` | Create a streaming chat completion | Yes |
-| `gabriel(params)` | AI intent orchestration | No |
+| `chatStream(params)` | Create a streaming chat completion | Yes |
+| `chatClaude(params)` | Chat completion with a premium Claude model | Yes |
+| `gabrielClassify(params)` | AI intent orchestration | No |
 | `translate(params)` | Translate text between languages | No |
-| `getUsage(params?)` | Get usage analytics | Yes |
-| `listBuckets()` | List storage buckets | Yes |
-| `createBucket(params)` | Create a new bucket | Yes |
-| `provisionS3Bucket(params)` | Provision enterprise S3 bucket | Yes |
-| `presignUpload(bucketId, params)` | Generate presigned upload URL | Yes |
-| `presignDownload(bucketId, params)` | Generate presigned download URL | Yes |
+| `getBalance()` | Get credit balance, tier, and overage config | Yes |
+| `getTransactions(params?)` | Get transaction history | Yes |
+| `listStabilityTools()` | List Stability AI tools | Yes |
+| `generate3D(params)` | Generate a 3D model | Yes |
+| `listWebhooks()` | List webhook subscriptions | Yes |
 
 ---
 

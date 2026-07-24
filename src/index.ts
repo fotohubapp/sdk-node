@@ -102,6 +102,7 @@ export type {
 // Types — Chat / LLM
 export type {
   ChatOptions,
+  ChatClaudeOptions,
   ChatBedrockOptions,
   ChatMessage,
   ChatResult,
