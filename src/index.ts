@@ -62,6 +62,13 @@ export type {
   ImageMetadata,
 } from "./types.js";
 
+// Types — IDA Q 1.0 (proprietary, async)
+export type {
+  GenerateIdaQOptions,
+  IdaQJobSubmitResult,
+  IdaQJobStatus,
+} from "./types.js";
+
 // Types — Image editing
 export type {
   EditImageOptions,
@@ -162,6 +169,13 @@ export type {
   ThreeDModelInfo,
   ThreeDPollOptions,
   ThreeDGenerationOptions,
+  GarmentCategory,
+  GarmentPhotoType,
+  TryOnGarment,
+  TryOnOptions,
+  TryOnSubmitResult,
+  TryOnResult,
+  TryOnPollOptions,
 } from "./types.js";
 
 // Types — Tier Management

@@ -36,6 +36,7 @@
 - **Full TypeScript** --- every request and response is strictly typed
 - **ESM + CommonJS** --- dual-package exports, works everywhere
 - **Streaming** --- Server-Sent Events for real-time chat completions
+- **Virtual try-on** --- one garment, or a chained top + bottom outfit in a single call
 - **Automatic retries** --- exponential backoff on transient failures
 - **Typed errors** --- 11 distinct error classes for precise handling
 - **Tiny footprint** --- tree-shakeable, no bloat
@@ -177,6 +178,51 @@ console.log(music.audioUrl);   // Audio file URL
 console.log(music.duration);   // Duration in seconds
 console.log(music.creditsUsed);
 ```
+
+---
+
+### Virtual Try-On
+
+A try-on is a job, not a blocking call: a render takes about 11 seconds, so you submit and then wait.
+
+```typescript
+const job = await client.tryOn({
+  personImageUrl: "https://example.com/person.jpg",
+  garmentImageUrl: "https://example.com/shirt.png",
+  category: "tops",              // "tops" | "bottoms" | "one-pieces"
+  garmentPhotoType: "flat-lay",
+});
+
+const result = await client.waitForTryOn(job.job_id, {
+  onProgress: (r) => console.log(r.status, r.progress),
+});
+console.log(result.images?.[0]);
+```
+
+Pass `garments` to dress a top **and** a bottom in one job. The API applies the top first, feeds
+that render into the second pass, and charges 3 credits instead of 4:
+
+```typescript
+const job = await client.tryOn({
+  personImageUrl: "https://example.com/person.jpg",
+  garments: [
+    { garmentImageUrl: "https://example.com/tee.png", category: "tops" },
+    { garmentId: "0f1e2d3c-...", category: "bottoms" },   // or a catalogue id
+  ],
+});
+
+const result = await client.waitForTryOn(job.job_id, { maxWait: 60_000 });
+
+// If the second pass failed, the top-only render still comes back and one credit
+// is refunded — so check before calling it a finished outfit.
+const partial = result.metadata?.partial_failure;
+if (partial) {
+  console.warn(`The ${partial.slot} is missing`, result.images?.[0]);
+}
+```
+
+Exactly one top plus one bottom is required — two tops, three garments, or a `one-pieces` in the
+array are rejected with `400`. Hats and shoes are not supported by the model at all.
 
 ---
 
@@ -572,6 +618,9 @@ import type {
 | `getTransactions(params?)` | Get transaction history | Yes |
 | `listStabilityTools()` | List Stability AI tools | Yes |
 | `generate3D(params)` | Generate a 3D model | Yes |
+| `tryOn(params)` | Submit a virtual try-on (one garment, or a top + bottom outfit) | Yes |
+| `getTryOnStatus(jobId)` | Poll a try-on job | Yes |
+| `waitForTryOn(jobId, opts?)` | Wait for a try-on job to finish | Yes |
 | `listWebhooks()` | List webhook subscriptions | Yes |
 
 ---

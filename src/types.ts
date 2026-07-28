@@ -70,6 +70,45 @@ export interface ImageMetadata {
   seeds?: number[];
 }
 
+// ─── IDA Q 1.0 (proprietary, async) ──────────────────────────────────────────
+
+export interface GenerateIdaQOptions {
+  /** Text prompt describing the image to generate. Any language. */
+  prompt: string;
+  /** Aspect ratio. One of "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9" */
+  aspect_ratio?: string;
+  /** Resolution tier: "1K" (~30s), "1.5K" (~90s), or "2K" (~3.5min) */
+  image_size?: "1K" | "1.5K" | "2K";
+  /** Number of images to generate (1-2) */
+  num_images?: number;
+  /** Random seed for reproducibility */
+  seed?: number;
+  /** Seconds to wait between status checks while polling. Defaults to 3. */
+  poll_interval_seconds?: number;
+  /** Maximum seconds to wait for completion before throwing. Defaults to 300. */
+  timeout_seconds?: number;
+}
+
+export interface IdaQJobSubmitResult {
+  model: "ida-q-image";
+  job_id: string;
+  status: "queued";
+  credits_used: number;
+  billing: BillingInfo;
+  estimated_seconds: number;
+  poll_url: string;
+}
+
+export interface IdaQJobStatus {
+  job_id: string;
+  status: "queued" | "processing" | "completed" | "failed";
+  progress: number;
+  estimated_seconds?: number;
+  images?: string[];
+  metadata?: Record<string, unknown>;
+  error?: string;
+}
+
 // ─── Image Editing ────────────────────────────────────────────────────────────
 
 export interface EditImageOptions {
@@ -769,6 +808,79 @@ export interface ThreeDPollOptions {
   maxWait?: number;
   /** Callback for status updates */
   onProgress?: (result: ThreeDResult) => void;
+}
+
+// ─── Virtual Try-On ─────────────────────────────────────────────────────────
+
+export type GarmentCategory = "tops" | "bottoms" | "one-pieces";
+export type GarmentPhotoType = "flat-lay" | "model" | "auto";
+
+/** One garment in an outfit. Supply a URL or a catalogue id, not both. */
+export interface TryOnGarment {
+  garmentImageUrl?: string;
+  garmentId?: string;
+  category: GarmentCategory;
+  garmentPhotoType?: GarmentPhotoType;
+}
+
+export interface TryOnOptions {
+  /** Publicly reachable URL of the person photo */
+  personImageUrl: string;
+  /** URL of the garment photo. Required unless garmentId or garments is given */
+  garmentImageUrl?: string;
+  /** Catalogue garment — supplies the image and overrides category/photo type */
+  garmentId?: string;
+  /** Defaults to "tops" */
+  category?: GarmentCategory;
+  /** How the garment was shot. Defaults to "flat-lay" server-side */
+  garmentPhotoType?: GarmentPhotoType;
+  /**
+   * Two garments applied in one job — exactly one top and one bottom, no
+   * one-pieces. Costs 3 credits instead of 4 and forces numImages to 1. Order
+   * is irrelevant: the top is always applied first.
+   */
+  garments?: TryOnGarment[];
+  /** Renders to produce, 1-4. Ignored for an outfit */
+  numImages?: number;
+  /** Fixed seed for reproducible output */
+  seed?: number;
+}
+
+export interface TryOnSubmitResult {
+  model: string;
+  job_id: string;
+  status: string;
+  category: string;
+  credits_used: number;
+  billing: { method: string; pln_charged: number };
+  estimated_seconds: number;
+  poll_url: string;
+}
+
+export interface TryOnResult {
+  job_id: string;
+  status: "queued" | "processing" | "completed" | "failed" | "cancelled";
+  progress?: number | null;
+  images?: string[];
+  error_message?: string | null;
+  estimated_seconds?: number;
+  /**
+   * Present when an outfit's second pass failed: the top-only render is
+   * returned and one credit refunded, so the job still completes.
+   */
+  metadata?: {
+    partial_failure?: { slot: string; reason: string };
+    [key: string]: unknown;
+  };
+}
+
+export interface TryOnPollOptions {
+  /** Polling interval in milliseconds. Defaults to 3000 (3s) */
+  pollInterval?: number;
+  /** Maximum time to wait in milliseconds. Defaults to 120000 (2 min) */
+  maxWait?: number;
+  /** Callback for status updates */
+  onProgress?: (result: TryOnResult) => void;
 }
 
 // ─── Tier Management ────────────────────────────────────────────────────────

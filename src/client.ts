@@ -3,6 +3,10 @@ import type {
   RequestOptions,
   GenerateImageOptions,
   ImageResult,
+  ImageMetadata,
+  GenerateIdaQOptions,
+  IdaQJobSubmitResult,
+  IdaQJobStatus,
   EditImageOptions,
   EditResult,
   GenerateVideoOptions,
@@ -48,6 +52,10 @@ import type {
   ThreeDResult,
   ThreeDModelInfo,
   ThreeDPollOptions,
+  TryOnOptions,
+  TryOnSubmitResult,
+  TryOnResult,
+  TryOnPollOptions,
   TierCatalog,
   TierInfo,
   TierComparison,
@@ -85,7 +93,7 @@ const DEFAULT_TIMEOUT = 60_000;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_IMAGE_MODEL = "seedream-5-0-260128";
 
-const SDK_VERSION = "1.4.0";
+const SDK_VERSION = "1.6.0";
 const USER_AGENT = `fotohub-sdk-node/${SDK_VERSION}`;
 
 /**
@@ -192,6 +200,76 @@ export class FotoHub {
       body,
       requiresAuth: true,
     });
+  }
+
+  /**
+   * Generate an image with IDA Q 1.0, FOTOhub's proprietary image model.
+   *
+   * Unlike {@link generateImage}, IDA Q 1.0 runs on a self-hosted, single-GPU
+   * queue and is asynchronous — generation takes 30 seconds to ~3.5 minutes
+   * depending on `image_size`. This method submits the job and polls until it
+   * completes, returning the finished result. Any prompt (including non-English
+   * text) is automatically translated and restructured for best results — see
+   * the {@link https://docs.fotohub.app/api/ida-q | IDA Q 1.0 docs}.
+   *
+   * @param options - IDA Q 1.0 generation parameters
+   * @returns The finished image result once generation completes
+   *
+   * @example
+   * ```typescript
+   * const result = await client.generateIdaQ({
+   *   prompt: "A cinematic portrait of an astronaut on Mars at sunset",
+   *   aspect_ratio: "16:9",
+   *   image_size: "1.5K",
+   * });
+   * console.log(result.images[0]);
+   * ```
+   */
+  async generateIdaQ(options: GenerateIdaQOptions): Promise<ImageResult> {
+    const body: Record<string, unknown> = {
+      prompt: options.prompt,
+      model: "ida-q-image",
+      aspect_ratio: options.aspect_ratio ?? "1:1",
+      image_size: options.image_size ?? "1K",
+      num_images: options.num_images ?? 1,
+    };
+    if (options.seed !== undefined) body.seed = options.seed;
+
+    const submitResult = await this.request<IdaQJobSubmitResult>({
+      method: "POST",
+      path: "/v1/ai/generate/image",
+      body,
+      requiresAuth: true,
+    });
+
+    const pollIntervalMs = (options.poll_interval_seconds ?? 3) * 1000;
+    const timeoutMs = (options.timeout_seconds ?? 300) * 1000;
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+      const status = await this.request<IdaQJobStatus>({
+        method: "GET",
+        path: `/v1/ai/generate/image/ida-q/${submitResult.job_id}`,
+        requiresAuth: true,
+      });
+
+      if (status.status === "completed") {
+        return {
+          model: "ida-q-image",
+          credits_used: submitResult.credits_used,
+          billing: submitResult.billing,
+          images: status.images ?? [],
+          metadata: status.metadata as ImageMetadata | undefined,
+        };
+      }
+      if (status.status === "failed") {
+        throw new FotoHubError(status.error ?? "IDA Q 1.0 generation failed", "generation_failed");
+      }
+
+      await this.sleep(pollIntervalMs);
+    }
+
+    throw new TimeoutError(`IDA Q 1.0 job ${submitResult.job_id} did not complete within ${options.timeout_seconds ?? 300}s`);
   }
 
   /**
@@ -1408,6 +1486,121 @@ export class FotoHub {
       path: "/v1/ai/generate/3d/models",
       requiresAuth: true,
     });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // VIRTUAL TRY-ON
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Dress a person photo in a garment.
+   *
+   * Returns immediately with a job id — a render takes ~11 s, so collect the
+   * result with `waitForTryOn()`.
+   *
+   * @example Single garment
+   * ```ts
+   * const job = await client.tryOn({
+   *   personImageUrl: "https://example.com/person.jpg",
+   *   garmentImageUrl: "https://example.com/shirt.png",
+   *   category: "tops",
+   * });
+   * const done = await client.waitForTryOn(job.job_id);
+   * console.log(done.images?.[0]);
+   * ```
+   *
+   * @example Outfit — a top and a bottom in one job, 3 credits
+   * ```ts
+   * const job = await client.tryOn({
+   *   personImageUrl: "https://example.com/person.jpg",
+   *   garments: [
+   *     { garmentImageUrl: "https://example.com/tee.png", category: "tops" },
+   *     { garmentId: "0f1e…", category: "bottoms" },
+   *   ],
+   * });
+   * ```
+   */
+  async tryOn(options: TryOnOptions): Promise<TryOnSubmitResult> {
+    const body: Record<string, unknown> = {
+      person_image_url: options.personImageUrl,
+      num_images: options.numImages ?? 1,
+    };
+
+    // An outfit and a single garment are mutually exclusive request shapes;
+    // sending both would leave the server to guess which was meant.
+    if (options.garments && options.garments.length > 0) {
+      body.garments = options.garments.map((g) => ({
+        garment_image_url: g.garmentImageUrl,
+        garment_id: g.garmentId,
+        category: g.category,
+        garment_photo_type: g.garmentPhotoType,
+      }));
+    } else {
+      body.garment_image_url = options.garmentImageUrl;
+      body.garment_id = options.garmentId;
+      body.category = options.category ?? "tops";
+      body.garment_photo_type = options.garmentPhotoType;
+    }
+    if (options.seed !== undefined) body.seed = options.seed;
+
+    return await this.request<TryOnSubmitResult>({
+      method: "POST",
+      path: "/v1/ai/tryon",
+      body,
+      requiresAuth: true,
+    });
+  }
+
+  /**
+   * Check the status of a try-on job.
+   */
+  async getTryOnStatus(jobId: string): Promise<TryOnResult> {
+    return await this.request<TryOnResult>({
+      method: "GET",
+      path: `/v1/ai/tryon/${jobId}`,
+      requiresAuth: true,
+    });
+  }
+
+  /**
+   * Wait for a try-on job to complete, polling at intervals.
+   *
+   * A partially failed outfit resolves rather than throwing: the top-only
+   * render comes back and one credit is refunded. Inspect
+   * `result.metadata?.partial_failure` to detect it.
+   */
+  async waitForTryOn(jobId: string, options: TryOnPollOptions = {}): Promise<TryOnResult> {
+    const pollInterval = options.pollInterval ?? 3_000;
+    const maxWait = options.maxWait ?? 120_000;
+    const startTime = Date.now();
+
+    while (true) {
+      if (Date.now() - startTime >= maxWait) {
+        throw new JobTimeoutError(
+          jobId,
+          `Try-on job ${jobId} timed out after ${Math.round(maxWait / 1000)}s`
+        );
+      }
+
+      const result = await this.getTryOnStatus(jobId);
+
+      if (options.onProgress) {
+        options.onProgress(result);
+      }
+
+      if (result.status === "completed") {
+        return result;
+      }
+
+      if (result.status === "failed" || result.status === "cancelled") {
+        throw new JobFailedError(
+          jobId,
+          result.error_message || `Try-on job ${jobId} ${result.status}`
+        );
+      }
+
+      await this.sleep(pollInterval);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
