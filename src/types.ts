@@ -737,7 +737,7 @@ export interface Generate3DOptions {
   /** Generation mode */
   mode: "image-to-3d" | "text-to-3d";
   /** 3D model to use */
-  model: "triposr" | "sf3d" | "shap-e" | "trellis" | "hunyuan3d";
+  model: "fh-lite-3d" | "fh-text-3d" | "fh-pro-3d";
   /** Base64-encoded image (required for image-to-3d) */
   image?: string;
   /** Text prompt (required for text-to-3d) */

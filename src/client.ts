@@ -93,7 +93,7 @@ const DEFAULT_TIMEOUT = 60_000;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_IMAGE_MODEL = "seedream-5-0-260128";
 
-const SDK_VERSION = "1.6.0";
+const SDK_VERSION = "1.7.0";
 const USER_AGENT = `fotohub-sdk-node/${SDK_VERSION}`;
 
 /**
@@ -1369,7 +1369,7 @@ export class FotoHub {
    * ```typescript
    * const result = await client.generate3D({
    *   mode: "image-to-3d",
-   *   model: "triposr",
+   *   model: "fh-lite-3d",
    *   image: base64EncodedImage,
    *   format: "glb",
    * });
@@ -1428,7 +1428,7 @@ export class FotoHub {
    *
    * @example
    * ```typescript
-   * const gen = await client.generate3D({ mode: "text-to-3d", model: "shap-e", prompt: "a castle" });
+   * const gen = await client.generate3D({ mode: "text-to-3d", model: "fh-text-3d", prompt: "a castle" });
    * const completed = await client.waitFor3D(gen.id, {
    *   onProgress: (r) => console.log(`Status: ${r.status}`),
    * });
