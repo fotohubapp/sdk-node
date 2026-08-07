@@ -35,10 +35,12 @@
 - **Zero dependencies** --- uses native `fetch` (Node.js 18+, Deno, Bun, browsers)
 - **Full TypeScript** --- every request and response is strictly typed
 - **ESM + CommonJS** --- dual-package exports, works everywhere
-- **Streaming** --- Server-Sent Events for real-time chat completions
 - **Virtual try-on** --- one garment, or a chained top + bottom outfit in a single call
+- **IDA Q 1.0** --- FOTOhub's own image model, submitted and polled for you
+- **Stability tools** --- upscale, erase, inpaint, outpaint, recolor, style transfer
+- **Billing in USD** --- balance, top-ups, transactions, invoices, overage caps
 - **Automatic retries** --- exponential backoff on transient failures
-- **Typed errors** --- 11 distinct error classes for precise handling
+- **Typed errors** --- 12 distinct error classes for precise handling
 - **Tiny footprint** --- tree-shakeable, no bloat
 
 ---
@@ -77,11 +79,15 @@ const client = new FotoHub({
 // Generate an image
 const image = await client.generateImage({
   prompt: "A cyberpunk cityscape at sunset, neon lights reflecting on wet streets",
-  aspectRatio: "16:9",
+  aspect_ratio: "16:9",
 });
 
-console.log(image.images[0].url);
+console.log(image.images[0]);
 ```
+
+> **Options are `snake_case`.** They are forwarded to the API as-is, so it is
+> `aspect_ratio`, `num_images`, `image_url` — not `aspectRatio`. `result.images`
+> is a `string[]` of URLs, not a list of objects.
 
 ---
 
@@ -95,7 +101,9 @@ const client = new FotoHub({
 });
 ```
 
-The API key is sent as a Bearer token in the `Authorization` header. Some endpoints (translation, Gabriel) work without authentication.
+The API key is sent as a Bearer token in the `Authorization` header. Four methods
+skip it — `translate()`, `gabrielSuggest()`, `gabrielRecommend()` and
+`getTierCatalog()`. Everything else, `gabrielClassify()` included, needs a key.
 
 > **Security:** Never expose your API key in client-side code. Use environment variables or a server-side proxy.
 
@@ -111,30 +119,46 @@ Generate images from text prompts with 25+ AI models.
 const result = await client.generateImage({
   prompt: "A serene Japanese garden in autumn, watercolor style",
   model: "seedream-5-0-260128",
-  aspectRatio: "16:9",
-  numImages: 2,
-  guidanceScale: 7.5,
-  steps: 30,
-  outputFormat: "png",
+  aspect_ratio: "16:9",
+  num_images: 2,
+  output_format: "png",
 });
 
-for (const img of result.images) {
-  console.log(img.url);       // Generated image URL
-  console.log(img.width);     // Image dimensions
+for (const url of result.images) {
+  console.log(url);
 }
 
-console.log(result.creditsUsed);              // Credits consumed
-console.log(result.metadata.generationTimeMs); // Generation time (ms)
+console.log(result.credits_used);
+console.log(result.billing.usd_charged);
+console.log(result.metadata?.generation_time_ms);
 ```
+
+`guidance_scale` and `steps` are accepted by the type but forwarded to an
+endpoint that ignores them — treat them as no-ops rather than knobs.
 
 #### Image-to-Image (Style Reference)
 
 ```typescript
 const result = await client.generateImage({
   prompt: "Same scene but in winter with snow",
-  referenceImageUrl: "https://example.com/original.jpg",
-  referenceStrength: 0.7,
+  reference_image_url: "https://example.com/original.jpg",
+  reference_strength: 0.7,
 });
+```
+
+#### IDA Q 1.0
+
+FOTOhub's own model runs on a single-GPU queue, so it has a dedicated method that
+submits the job and polls until it finishes — ~30 s at `1K`, up to ~3.5 min at `2K`:
+
+```typescript
+const result = await client.generateIdaQ({
+  prompt: "Portret kobiety w świetle porannym",   // any language
+  aspect_ratio: "4:3",
+  image_size: "1.5K",
+});
+
+console.log(result.images[0]);
 ```
 
 ---
@@ -159,6 +183,64 @@ console.log(video.credits_used); // Credits consumed
 
 ---
 
+### Seedance — long clips and video editing
+
+Seedance is the one video family that runs **asynchronously**: the API answers
+`202` with a `job_id` rather than a finished video, so `generateVideo()` cannot
+consume it. Use `generateSeedance()`, which submits the job and polls until it
+finishes.
+
+`seedance-2-5` renders **4–30 seconds in a single clip** — the longest we offer —
+and its audio track is included in the price. The trade-off is resolution:
+**480p and 720p only**. For 1080p or 4K stay on `seedance-2-0-pro` (4–15s).
+
+```typescript
+const result = await client.generateSeedance({
+  prompt: "A lone hiker crossing a snowfield, wind picking up, wide drone shot",
+  duration: 30,
+  resolution: "720p",
+  generate_audio: true,          // free
+  onProgress: (job) => console.log(`${job.status} ${job.progress ?? 0}%`),
+});
+
+console.log(result.video_url);
+console.log(result.credits_used); // ~435 for 30s @ 720p
+```
+
+Rates are per second: **14.5 credits/s at 720p**, **6.4 at 480p**. Draft at 480p
+(a 5s test costs 32 credits) and re-render the take you like at 720p.
+
+**Edit or extend an existing video** — pass `reference_videos` and
+`duration: -1` to keep the source length:
+
+```typescript
+const edited = await client.generateSeedance({
+  prompt: "Make it golden hour, warmer light on the subject's face",
+  reference_videos: ["https://example.com/clip.mp4"],
+  duration: -1,
+});
+```
+
+A video reference bills at the higher **17.6 credits/s** (720p) because the
+source frames are charged as input.
+
+**Face consistency** — register a portrait once, then reuse the asset id:
+
+```typescript
+const asset = await client.registerVideoAsset("https://example.com/face.jpg");
+
+const result = await client.generateSeedance({
+  prompt: "The same woman walking through a night market, neon reflections",
+  asset_ids: [asset.asset_id],
+  duration: 10,
+});
+```
+
+`generateSeedance()` throws `JobTimeoutError` if the job is still running when
+`maxWait` (default 30 min) expires, and `JobFailedError` if the render fails.
+
+---
+
 ### Music Generation
 
 Generate original music from text descriptions.
@@ -169,15 +251,17 @@ const music = await client.generateMusic({
   duration: 30,
   genre: "electronic",
   tempo: 128,
-  key: "A minor",
   instrumental: true,
-  outputFormat: "mp3",
 });
 
-console.log(music.audioUrl);   // Audio file URL
-console.log(music.duration);   // Duration in seconds
-console.log(music.creditsUsed);
+console.log(music.audio_url);
+console.log(music.duration);
+console.log(music.credits_used);
 ```
+
+Music costs 5 credits up to 30 s, 10 up to 60 s, 25 beyond that; duration is
+capped at 300 s. `generateSfx()` and `generateSpeech()` follow the same shape and
+also return `audio_url`.
 
 ---
 
@@ -228,8 +312,6 @@ array are rejected with `400`. Hats and shoes are not supported by the model at 
 
 ### Chat / LLM Completions
 
-OpenAI-compatible chat completions with support for all major models.
-
 #### Non-Streaming
 
 ```typescript
@@ -237,163 +319,214 @@ const response = await client.chat({
   messages: [
     { role: "user", content: "Explain quantum entanglement in simple terms" },
   ],
-  model: "claude-sonnet-4-20250514",
-  maxTokens: 1000,
+  model: "gpt-4o",
+  max_tokens: 1000,
   temperature: 0.7,
 });
 
 console.log(response.choices[0].message.content);
-console.log(response.usage.totalTokens);
+console.log(response.credits_used);
 ```
+
+`chat()` accepts exactly four model IDs — `gemini-flash` (default),
+`gemini-pro`, `gpt-4o`, `claude-sonnet`. Anything else is rejected with `400`.
+For a full Claude model ID use `chatClaude()` or `chatBedrock()`.
+
+`credits_used` is the authoritative charge. `usage` is passed straight through
+from the provider and can arrive as `{}`, so read `usage.total_tokens` defensively.
 
 #### Streaming
 
+> **`client.chatStream()` throws `ValidationError`.**
+> It targeted `/v1/ai/chat/completions`, which accepts `stream: true` for OpenAI
+> compatibility and then ignores it, returning one complete JSON body. The SSE
+> parser found no `data:` frames there, so the iterator completed after **zero
+> chunks without throwing** — an empty result for a request you were still billed
+> for. It now throws before sending, which keeps the call free.
+
+The one streaming endpoint is `POST /v1/ai/agent/stream`. There is no wrapper for
+it yet — call it with `fetch`. Frames are keyed by `type` and the stream ends at
+`data: [DONE]`:
+
 ```typescript
-const stream = await client.streamChat({
-  messages: [{ role: "user", content: "Write a short story about a robot" }],
-  system: "You are a creative fiction writer.",
-});
-
-// Option 1: Iterate over raw chunks (full control)
-for await (const chunk of stream) {
-  const content = chunk.choices[0]?.delta.content;
-  if (content) process.stdout.write(content);
+interface AgentFrame {
+  type: "text_delta" | "tool_use" | "done" | "error";
+  text?: string;
+  name?: string;
+  usage?: { input_tokens: number; output_tokens: number; total_tokens: number };
+  message?: string;
 }
 
-// Option 2: Iterate over text fragments only
-const stream2 = await client.streamChat({
-  messages: [{ role: "user", content: "Tell me a joke" }],
-});
-for await (const text of stream2.textStream()) {
-  process.stdout.write(text);
+async function* agentFrames(prompt: string): AsyncGenerator<AgentFrame> {
+  const res = await fetch("https://apis.fotohub.app/v1/ai/agent/stream", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.FOTOHUB_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4.6",
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  outer: while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    // Frames are delimited by a blank line, not by a chunk boundary.
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop() ?? "";
+    for (const part of parts) {
+      const line = part.split("\n").find((l) => l.startsWith("data: "));
+      if (!line) continue;
+      const data = line.slice(6);
+      if (data === "[DONE]") break outer;   // the only reliable terminator
+      yield JSON.parse(data) as AgentFrame;
+    }
+  }
 }
 
-// Option 3: Collect all text at once
-const stream3 = await client.streamChat({
-  messages: [{ role: "user", content: "Summarize quantum physics" }],
-});
-const fullText = await stream3.toText();
-console.log(fullText);
+for await (const frame of agentFrames("Write a short story about a robot")) {
+  if (frame.type === "text_delta") process.stdout.write(frame.text ?? "");
+  else if (frame.type === "error") throw new Error(frame.message);
+}
 ```
+
+Two things to know: the `done` frame is **optional** (omitted when the turn
+produced no tokens, replaced by `error` when generation succeeded but settlement
+failed), and **abandoning the stream still bills you** — the server settles the
+tokens it already generated.
 
 ---
 
-### Gabriel --- AI Intent Orchestration
+### Gabriel --- Model Routing
 
-Interpret natural language intent and get structured action suggestions. **No authentication required.**
+Gabriel returns a routing *decision*, not a completion: it names the feature and
+model to use, and you make that call yourself. **An API key is required.**
 
 ```typescript
-const response = await client.gabriel({
-  message: "I want to create a professional headshot for LinkedIn",
+const decision = await client.gabrielClassify({
+  prompt: "I want to create a professional headshot for LinkedIn",
   language: "en",
 });
 
-console.log(response.intent);     // "generate_image"
-console.log(response.confidence); // 0.95
-console.log(response.action);     // { type: "generate_image", params: { ... } }
-console.log(response.response);   // Natural language explanation
+console.log(decision.action);          // route | answer | workflow | error
+console.log(decision.target);          // the feature to send the user to
+console.log(decision.model_selected);
+console.log(decision.credits_estimated);
+
+// Autocomplete while typing, and idle suggestions — both keyless:
+console.log(await client.gabrielSuggest({ partial: "make me a log", tab: "image" }));
+console.log(await client.gabrielRecommend({ credits_remaining: 40 }));
 ```
 
 ---
 
 ### Translation
 
-Translate text between languages with formality control. **No authentication required.**
+**No authentication required.**
 
 ```typescript
 const result = await client.translate({
   text: "The future of AI is collaborative and open",
-  targetLanguage: "pl",
-  formality: "formal",
-  context: "Technology blog post",
+  target_language: "pl",
 });
 
-console.log(result.translatedText);         // Polish translation
-console.log(result.detectedSourceLanguage); // "en"
-console.log(result.confidence);             // 0.97
+console.log(result.translated_text);
+console.log(result.source_language);   // "auto" unless you set source_language
+console.log(result.character_count);
 ```
+
+There is no `formality`, `context` or `confidence` — the endpoint takes `text`,
+`target_language` and optional `source_language`, nothing more. On a provider
+timeout it returns your input text unchanged instead of an error, so compare
+against the input if that distinction matters.
 
 ---
 
-### Usage Analytics
+### Billing & Usage
 
-Track credit consumption and API usage by service and time period.
+All amounts are **USD**.
 
 ```typescript
-const usage = await client.getUsage({
-  startDate: "2026-07-01",
-  endDate: "2026-07-18",
-  groupBy: "day",
-});
+const balance = await client.getBalance();
+console.log(balance.credits.remaining_4h, "credits left in this 4h window");
+console.log(balance.wallet.balance, balance.wallet.currency);   // USD
 
-console.log(usage.totalCredits);  // Total credits consumed
-console.log(usage.totalRequests); // Total API calls
-console.log(usage.byService);    // Breakdown by service
-console.log(usage.timeSeries);   // Daily time series
+console.log(await client.getTransactions({ page: 1, pageSize: 20 }));
+console.log(await client.getInvoices());
+console.log(
+  await client.estimateCost([{ type: "generate_image", model: "flux-2-pro", count: 10 }])
+);
+```
+
+Per-endpoint analytics live at `GET /v1/usage` (JWT auth, fixed 30-day window)
+and have no SDK wrapper — see the
+[Usage & Analytics docs](https://docs.fotohub.app/api/usage-analytics).
+
+**Topping up.** Take a fixed package or name your own amount:
+
+```typescript
+for (const pkg of await client.getTopupPackages()) {
+  // The slugs are historical — topup-50 is now the $15 package. Read
+  // amount_usd, never the number in the slug.
+  console.log(pkg.slug, pkg.amount_usd, `+${pkg.bonus_pct}% bonus credits`);
+}
+
+// topupWallet takes positional arguments, not an options object.
+const session = await client.topupWallet(40);
+console.log(session.checkout_url);
+```
+
+The wallet is denominated in USD, but a customer in Poland can pay in złoty —
+pass `"pln"` as the second argument and Stripe offers BLIK, card and bank
+transfer while the wallet is credited the USD amount you asked for:
+
+```typescript
+const session = await client.topupWallet(40, "pln");
 ```
 
 ---
 
 ### Storage
 
-Manage buckets, provision enterprise S3 storage, and generate presigned URLs for direct uploads/downloads.
-
-#### Bucket Management
-
-```typescript
-// List existing buckets
-const buckets = await client.listBuckets();
-
-// Create a new bucket
-const bucket = await client.createBucket({
-  name: "project-assets",
-  public: false,
-  allowedMimeTypes: ["image/*", "video/*"],
-  fileSizeLimit: 100 * 1024 * 1024, // 100 MB
-});
-```
-
-#### Presigned Uploads
+Dedicated S3 buckets live under `/v1/storage/s3/*` and are **not wrapped by this
+SDK** — call them with `fetch` for now:
 
 ```typescript
-const presigned = await client.presignUpload("bucket-id", {
-  key: "uploads/video.mp4",
-  contentType: "video/mp4",
-  expiresIn: 3600, // 1 hour
-});
+const headers = {
+  "Content-Type": "application/json",
+  Authorization: `Bearer ${process.env.FOTOHUB_API_KEY}`,
+};
 
-// Upload directly to storage (no data passes through your server)
-await fetch(presigned.url, {
-  method: "PUT",
-  headers: presigned.headers,
-  body: fileBuffer,
-});
-```
+const buckets = await (
+  await fetch("https://apis.fotohub.app/v1/storage/s3/buckets", { headers })
+).json();
 
-#### Presigned Downloads
+const presigned = await (
+  await fetch(
+    `https://apis.fotohub.app/v1/storage/s3/buckets/${buckets[0].id}/objects/presign-upload`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        key: "uploads/video.mp4",
+        content_type: "video/mp4",
+        expires_in: 3600,
+      }),
+    }
+  )
+).json();
 
-```typescript
-const download = await client.presignDownload("bucket-id", {
-  key: "uploads/video.mp4",
-  expiresIn: 3600,
-});
-
-console.log(download.url); // Temporary authenticated download link
-```
-
-#### Enterprise S3 Provisioning
-
-```typescript
-const s3 = await client.provisionS3Bucket({
-  name: "enterprise-media",
-  region: "eu-central-1",
-  storageClass: "INTELLIGENT_TIERING",
-  versioning: true,
-});
-
-console.log(s3.endpoint);
-console.log(s3.credentials.accessKeyId);
-console.log(s3.credentials.secretAccessKey);
+// Upload directly to storage — no data passes through your server.
+await fetch(presigned.url, { method: "PUT", body: fileBuffer });
 ```
 
 ---
@@ -543,13 +676,13 @@ The SDK automatically retries failed requests with exponential backoff:
 
 ```typescript
 // Increase retries for critical workloads
-const client = new FotoHub({
+const resilient = new FotoHub({
   apiKey: "fh_live_...",
   maxRetries: 5,
 });
 
 // Disable retries entirely
-const client = new FotoHub({
+const noRetry = new FotoHub({
   apiKey: "fh_live_...",
   maxRetries: 0,
 });
@@ -578,50 +711,144 @@ The SDK is written in TypeScript and exports all types for full IntelliSense sup
 import type {
   FotoHubConfig,
   GenerateImageOptions,
+  GenerateIdaQOptions,
   ImageResult,
   ImageMetadata,
+  EditImageOptions,
+  EditResult,
   GenerateVideoOptions,
   VideoResult,
   GenerateMusicOptions,
   MusicResult,
+  GenerateSpeechOptions,
+  SpeechResult,
+  TranscribeOptions,
+  TranscriptionResult,
   ChatOptions,
   ChatMessage,
   ChatResult,
-  ChatStreamChunk,
-  ChatStream,
   ChatClaudeOptions,
+  GabrielClassifyOptions,
+  GabrielResult,
+  TranslateOptions,
+  TranslateResult,
   BillingBalance,
+  WalletInfo,
+  TopupPackage,
+  CostOperation,
+  CostEstimate,
+  TransactionOptions,
   TransactionPage,
   StabilityTool,
   StabilityResult,
+  Generate3DOptions,
+  ThreeDResult,
+  TryOnOptions,
+  TryOnResult,
   Webhook,
 } from "fotohub";
 ```
+
+`ChatStreamChunk` and the `ChatStream` class are still exported, but only so
+existing imports keep compiling — `chatStream()` throws before it ever produces
+one. There is nothing to type against; use the raw `/v1/ai/agent/stream` frames
+from the [Streaming](#streaming) section instead.
 
 ---
 
 ## API Methods Reference
 
-| Method | Description | Auth Required |
+Every method takes a single options object unless the signature below shows
+positional arguments. Only four methods work without an API key.
+
+**Generation**
+
+| Method | Description | Key |
 |--------|-------------|:---:|
-| `generateImage(params)` | Generate images from a text prompt | Yes |
-| `generateVideo(params)` | Generate a video (synchronous — returns `video_url`) | Yes |
-| `generateMusic(params)` | Generate music from a text description | Yes |
-| `generateSpeech(params)` | Text-to-speech synthesis | Yes |
-| `transcribe(params)` | Transcribe audio to text | Yes |
-| `chat(params)` | Create a chat completion | Yes |
-| `chatStream(params)` | Create a streaming chat completion | Yes |
-| `chatClaude(params)` | Chat completion with a premium Claude model | Yes |
-| `gabrielClassify(params)` | AI intent orchestration | No |
-| `translate(params)` | Translate text between languages | No |
-| `getBalance()` | Get credit balance, tier, and overage config | Yes |
-| `getTransactions(params?)` | Get transaction history | Yes |
-| `listStabilityTools()` | List Stability AI tools | Yes |
-| `generate3D(params)` | Generate a 3D model | Yes |
-| `tryOn(params)` | Submit a virtual try-on (one garment, or a top + bottom outfit) | Yes |
+| `generateImage(options)` | Generate images from a text prompt | Yes |
+| `generateIdaQ(options)` | Generate with IDA Q 1.0 (proprietary) | Yes |
+| `editImage(options)` | Edit an existing image from an instruction | Yes |
+| `removeBackground(imageUrl)` | Cut out the background | Yes |
+| `upscaleImage(imageUrl, scale?)` | Upscale (`scale` defaults to `2`) | Yes |
+| `analyzeImage(options)` | Vision analysis of an image | Yes |
+| `generateVideo(options)` | Generate a video — **synchronous**, returns `video_url`. Not for Seedance | Yes |
+| `generateSeedance(options)` | Seedance 4–30s — submits and polls to completion | Yes |
+| `registerVideoAsset(imageUrl)` | Register a face for Seedance `asset_ids` — free | Yes |
+| `waitForVideo(result, opts?)` | Deprecated no-op; returns its input unchanged | Yes |
+| `generateMusic(options)` | Generate music from a description | Yes |
+| `generateSfx(options)` | Generate a sound effect | Yes |
+| `generateSpeech(options)` | Text-to-speech synthesis | Yes |
+| `transcribe(options)` | Transcribe audio to text | Yes |
+| `generate3D(options)` | Submit a 3D generation job | Yes |
+| `get3DStatus(jobId)` | Poll a 3D job | Yes |
+| `waitFor3D(jobId, opts?)` | Wait for a 3D job to finish | Yes |
+| `list3DModels()` | List available 3D models | Yes |
+| `tryOn(options)` | Submit a virtual try-on (one garment, or top + bottom) | Yes |
 | `getTryOnStatus(jobId)` | Poll a try-on job | Yes |
 | `waitForTryOn(jobId, opts?)` | Wait for a try-on job to finish | Yes |
-| `listWebhooks()` | List webhook subscriptions | Yes |
+
+**Chat & orchestration**
+
+| Method | Description | Key |
+|--------|-------------|:---:|
+| `chat(options)` | Chat completion — one complete body, never a stream | Yes |
+| `chatClaude(options)` | Chat completion on a premium Claude model | Yes |
+| `chatBedrock(options)` | Chat completion via Bedrock routing | Yes |
+| `chatStream(options)` | **Throws `ValidationError`** — see [Streaming](#streaming) | --- |
+| `enhancePrompt(prompt, style?)` | Rewrite a prompt for better output | Yes |
+| `gabrielClassify(options)` | Route a request to a model (returns a decision, not a completion) | Yes |
+| `gabrielSuggest(options)` | Prompt suggestions | No |
+| `gabrielRecommend(options?)` | Model recommendations | No |
+| `translate(options)` | Translate text (returns the input unchanged on failure) | No |
+
+**Stability AI tools**
+
+| Method | Description | Key |
+|--------|-------------|:---:|
+| `listStabilityTools()` | List available tools | Yes |
+| `runStabilityTool(toolId, options)` | Run any tool by id | Yes |
+| `stabilityUpscale(...)` | Upscale | Yes |
+| `stabilityRemoveBackground(imageBase64)` | Remove background | Yes |
+| `stabilityErase(imageBase64, maskBase64)` | Erase a masked region | Yes |
+| `stabilityInpaint(...)` | Inpaint a masked region | Yes |
+| `stabilityOutpaint(imageBase64, padding)` | Extend the canvas | Yes |
+| `stabilitySearchReplace(...)` | Replace an object by description | Yes |
+| `stabilityRecolor(...)` | Recolour an object | Yes |
+| `stabilityStyleTransfer(...)` | Apply a style reference | Yes |
+
+**Billing & tiers** --- all amounts USD
+
+| Method | Description | Key |
+|--------|-------------|:---:|
+| `getBalance()` | Credit balance, tier and overage config | Yes |
+| `getCredits()` | Credit totals only | Yes |
+| `getWallet()` | Wallet balance in USD | Yes |
+| `topupWallet(amountUsd, payCurrency?)` | Checkout for any amount; pass `"pln"` for BLIK | Yes |
+| `getTopupPackages()` | Fixed packages (read `amount_usd`, not the slug) | Yes |
+| `createTopup(packageSlug)` | Checkout for a fixed package | Yes |
+| `setOverageLimit(hardLimitUsd, projectId?)` | Cap overage spend | Yes |
+| `estimateCost(operations)` | Price a `CostOperation[]` before spending | Yes |
+| `getTransactions(options?)` | Paginated transaction history | Yes |
+| `getInvoices()` | Invoice list | Yes |
+| `getPricing()` | Public price catalogue | Yes |
+| `listModels(category?)` | Model catalogue | Yes |
+| `getPlans()` | API subscription plans | Yes |
+| `getTierCatalog()` | Public tier catalogue | No |
+| `getCurrentTier()` | Your tier, limits and usage | Yes |
+| `compareTiers()` | Your tier against the others | Yes |
+| `subscribeTier(tierSlug)` | Checkout for an API tier | Yes |
+| `applyEnterprise(application)` | Submit an enterprise application | Yes |
+
+**Webhooks**
+
+| Method | Description | Key |
+|--------|-------------|:---:|
+| `listWebhooks()` | List subscriptions | Yes |
+| `createWebhook(options)` | Create a subscription | Yes |
+| `updateWebhook(webhookId, options)` | Update a subscription | Yes |
+| `deleteWebhook(webhookId)` | Delete a subscription | Yes |
+| `testWebhook(webhookId)` | Send a test delivery | Yes |
+| `getWebhookLogs(webhookId)` | Recent delivery attempts | Yes |
 
 ---
 

@@ -17,13 +17,12 @@
  * });
  * console.log(image.images[0]);
  *
- * // Stream a chat response
- * const stream = await client.chatStream({
+ * // Chat completion (always returns one complete body — see chatStream() for
+ * // why streaming is not available through this SDK)
+ * const reply = await client.chat({
  *   messages: [{ role: "user", content: "Hello!" }],
  * });
- * for await (const chunk of stream) {
- *   process.stdout.write(chunk.choices[0]?.delta.content ?? "");
- * }
+ * console.log(reply.choices[0]?.message.content);
  * ```
  *
  * @packageDocumentation
@@ -33,6 +32,10 @@
 export { FotoHub } from "./client.js";
 
 // Streaming utilities
+// Retained for backwards compatibility only: `chatStream()` throws a
+// ValidationError before it can construct one, because
+// /v1/ai/chat/completions ignores `stream: true` and returns a single JSON
+// body. Consume /v1/ai/agent/stream directly for real SSE.
 export { ChatStream } from "./streaming.js";
 
 // Error classes
@@ -80,6 +83,10 @@ export type {
   GenerateVideoOptions,
   VideoResult,
   PollOptions,
+  GenerateSeedanceOptions,
+  SeedanceResult,
+  SeedanceReference,
+  RegisterVideoAssetResult,
 } from "./types.js";
 
 // Types — Music generation
@@ -188,6 +195,19 @@ export type {
   TierComparison,
   WalletInfo,
   EnterpriseApplication,
+} from "./types.js";
+
+// Types — Gabriel orchestration & translation
+export type {
+  GabrielClassifyOptions,
+  GabrielContext,
+  GabrielResult,
+  GabrielSuggestOptions,
+  GabrielSuggestion,
+  GabrielRecommendOptions,
+  GabrielRecommendation,
+  TranslateOptions,
+  TranslateResult,
 } from "./types.js";
 
 // Types — Models

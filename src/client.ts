@@ -12,6 +12,9 @@ import type {
   GenerateVideoOptions,
   VideoResult,
   PollOptions,
+  GenerateSeedanceOptions,
+  SeedanceResult,
+  RegisterVideoAssetResult,
   GenerateMusicOptions,
   MusicResult,
   GenerateSfxOptions,
@@ -86,14 +89,20 @@ import {
   JobTimeoutError,
 } from "./errors.js";
 
-import { parseSSEStream, ChatStream } from "./streaming.js";
+// parseSSEStream is no longer used here: chatStream() throws instead of
+// parsing a body that never contains SSE frames. It stays exported from
+// ./streaming.js for callers that hand it a real SSE response.
+import type { ChatStream } from "./streaming.js";
 
 const DEFAULT_BASE_URL = "https://apis.fotohub.app";
 const DEFAULT_TIMEOUT = 60_000;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_IMAGE_MODEL = "seedream-5-0-260128";
+// Seedance is the one video family that runs asynchronously (202 + job_id), so
+// it has its own method rather than being reachable through generateVideo().
+const DEFAULT_SEEDANCE_MODEL = "seedance-2-5";
 
-const SDK_VERSION = "1.7.0";
+const SDK_VERSION = "1.8.0";
 const USER_AGENT = `fotohub-sdk-node/${SDK_VERSION}`;
 
 /**
@@ -350,6 +359,150 @@ export class FotoHub {
   }
 
   /**
+   * Generate a video with a Seedance model, waiting for the result.
+   *
+   * Unlike {@link generateVideo}, the Seedance family is asynchronous: the API
+   * answers 202 with a `job_id` and the render runs in a queue. This method
+   * submits, polls, and resolves once the job is finished, so the result already
+   * contains `video_url`.
+   *
+   * `seedance-2-5` (the default) is the only model on the platform that produces
+   * a 30-second clip in one request, and the only one that accepts a source
+   * video for editing or extension. Native audio is included in its price —
+   * 14.5 credits/s at 720p, 6.4 at 480p, the same with `generate_audio` on or
+   * off. It does **not** do 1080p or 4K; those return a 400. For higher
+   * resolution use `seedance-2-0-pro` (up to 4K, but capped at 15s).
+   *
+   * @param options - Seedance generation parameters
+   * @returns The finished job, including `video_url` and `credits_used`
+   *
+   * @example
+   * ```typescript
+   * // A 30-second clip with audio — 435 credits at 720p
+   * const video = await client.generateSeedance({
+   *   prompt: "A chef plates a dish in a warm kitchen, steam rising, slow push-in",
+   *   duration: 30,
+   *   resolution: "720p",
+   *   generate_audio: true,
+   *   onProgress: (r) => console.log(`${r.status} ${r.progress ?? 0}%`),
+   * });
+   * console.log(video.video_url);
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Edit an existing clip — aspect ratio and duration follow the source
+   * const edited = await client.generateSeedance({
+   *   prompt: "Replace the grey sky with a clear blue sky and warm afternoon light",
+   *   reference_videos: ["https://s1.fotohub.app/storage/v1/object/public/videos/source.mp4"],
+   *   duration: -1,
+   * });
+   * console.log(edited.task_type); // "editing"
+   * ```
+   */
+  async generateSeedance(options: GenerateSeedanceOptions): Promise<SeedanceResult> {
+    const body: Record<string, unknown> = {
+      prompt: options.prompt,
+      model: options.model ?? DEFAULT_SEEDANCE_MODEL,
+      duration: options.duration ?? 5,
+      resolution: options.resolution ?? "720p",
+      aspect_ratio: options.aspect_ratio ?? "16:9",
+      generate_audio: options.generate_audio ?? false,
+    };
+
+    // Only send what was set. An explicit `reference_videos: undefined` would
+    // serialize away anyway, but `null` reads as an empty reference list, which
+    // changes the task type the model infers.
+    if (options.image_url !== undefined) body.image_url = options.image_url;
+    if (options.last_frame_url !== undefined) body.last_frame_url = options.last_frame_url;
+    if (options.reference_images !== undefined) body.reference_images = options.reference_images;
+    if (options.reference_videos !== undefined) body.reference_videos = options.reference_videos;
+    if (options.reference_audios !== undefined) body.reference_audios = options.reference_audios;
+    if (options.asset_ids !== undefined) body.asset_ids = options.asset_ids;
+    if (options.output_format !== undefined) body.output_format = options.output_format;
+    if (options.negative_prompt !== undefined) body.negative_prompt = options.negative_prompt;
+    if (options.seed !== undefined) body.seed = options.seed;
+    if (options.callback_url !== undefined) body.callback_url = options.callback_url;
+    if (options.smart_ratio) body.smart_ratio = true;
+    if (options.smart_duration) body.smart_duration = true;
+
+    const submitted = await this.request<SeedanceResult>({
+      method: "POST",
+      path: "/v1/ai/generate/video",
+      body,
+      requiresAuth: true,
+    });
+
+    // A non-Seedance model id was passed: that path is synchronous and has
+    // already returned the finished video, so there is no job to poll.
+    if (!submitted.job_id) return submitted;
+
+    const jobId = submitted.job_id;
+    const pollInterval = options.pollInterval ?? 10_000;
+    const maxWait = options.maxWait ?? 1_800_000;
+    const startTime = Date.now();
+
+    while (true) {
+      if (Date.now() - startTime >= maxWait) {
+        throw new JobTimeoutError(
+          jobId,
+          `Seedance job ${jobId} did not complete within ${Math.round(maxWait / 1000)}s. ` +
+            `It may still finish — poll GET /v1/ai/generate/video/${jobId}.`
+        );
+      }
+
+      const result = await this.request<SeedanceResult>({
+        method: "GET",
+        path: `/v1/ai/generate/video/${jobId}`,
+        requiresAuth: true,
+      });
+
+      options.onProgress?.(result);
+
+      if (result.status === "completed") return result;
+      if (result.status === "failed" || result.status === "cancelled") {
+        throw new JobFailedError(
+          jobId,
+          result.error_message || `Seedance job ${jobId} ${result.status}`
+        );
+      }
+
+      await this.sleep(pollInterval);
+    }
+  }
+
+  /**
+   * Register a hosted portrait as a reusable Seedance asset.
+   *
+   * Free — no credits are charged. Pass the returned `uri` (or bare id) in
+   * `asset_ids` on {@link generateSeedance} so the same face appears across
+   * generations.
+   *
+   * @param imageUrl - HTTPS URL on a FOTOhub host. Upload the file first;
+   *   third-party URLs are refused.
+   *
+   * @example
+   * ```typescript
+   * const asset = await client.registerVideoAsset(
+   *   "https://s1.fotohub.app/storage/v1/object/public/photos/face.jpg"
+   * );
+   * const video = await client.generateSeedance({
+   *   prompt: "The same woman walks through a night market, neon on wet pavement",
+   *   duration: 15,
+   *   asset_ids: [asset.uri],
+   * });
+   * ```
+   */
+  async registerVideoAsset(imageUrl: string): Promise<RegisterVideoAssetResult> {
+    return await this.request<RegisterVideoAssetResult>({
+      method: "POST",
+      path: "/v1/ai/assets/register",
+      body: { image_url: imageUrl },
+      requiresAuth: true,
+    });
+  }
+
+  /**
    * Generate music from a text description.
    *
    * @param options - Music generation parameters
@@ -514,42 +667,27 @@ export class FotoHub {
   }
 
   /**
-   * Create a streaming chat completion. Returns a ChatStream that yields
-   * chunks as they arrive via Server-Sent Events.
+   * @deprecated Not supported — always throws. `/v1/ai/chat/completions`
+   * accepts `stream: true` for OpenAI compatibility and then ignores it,
+   * returning one complete JSON body. `parseSSEStream` finds no `data:` frames
+   * in that body, so the iterator completed after zero chunks and threw
+   * nothing — an empty result for a request that was still billed. It now
+   * throws before the request so the call stays free.
    *
-   * @param options - Chat parameters (messages, model, temperature, etc.)
-   * @returns AsyncIterable stream of chat chunks
+   * For token-by-token output use `POST /v1/ai/agent/stream`, whose frames are
+   * keyed by `type` (`text_delta`, `tool_use`, `done`, `error`) and terminated
+   * by `data: [DONE]`. There is no SDK wrapper for it yet — call it with
+   * `fetch`. See https://docs.fotohub.app/guides/streaming
    *
-   * @example
-   * ```typescript
-   * const stream = await client.chatStream({
-   *   messages: [{ role: "user", content: "Write a haiku about code" }],
-   *   model: "gemini-flash",
-   * });
-   *
-   * // Iterate over chunks
-   * for await (const chunk of stream) {
-   *   const content = chunk.choices[0]?.delta.content;
-   *   if (content) process.stdout.write(content);
-   * }
-   *
-   * // Or collect all text at once
-   * const fullText = await stream.toText();
-   * ```
+   * @throws {ValidationError} Always.
    */
-  async chatStream(options: ChatOptions): Promise<ChatStream> {
-    const body = this.buildChatBody(options, true);
-
-    const response = await this.rawRequest({
-      method: "POST",
-      path: "/v1/ai/chat/completions",
-      body,
-      requiresAuth: true,
-      stream: true,
-    });
-
-    const sseIterable = parseSSEStream(response);
-    return new ChatStream(sseIterable);
+  async chatStream(_options: ChatOptions): Promise<ChatStream> {
+    throw new ValidationError(
+      "chatStream() is not supported: /v1/ai/chat/completions never streams, so " +
+        "the iterator would yield nothing while the request is still billed. Use " +
+        "POST /v1/ai/agent/stream for token-by-token output — see " +
+        "https://docs.fotohub.app/guides/streaming"
+    );
   }
 
   /**
@@ -954,7 +1092,7 @@ export class FotoHub {
    * ```typescript
    * const plans = await client.getPlans();
    * for (const plan of plans) {
-   *   console.log(`${plan.name}: ${plan.price_monthly} PLN/mo — ${plan.credits_included} credits`);
+   *   console.log(`${plan.name}: ${plan.price_pln} PLN/mo — ${plan.credits_monthly} credits`);
    * }
    * ```
    */
@@ -986,20 +1124,21 @@ export class FotoHub {
   }
 
   /**
-   * Set a hard overage spending limit (in PLN). When reached, API calls will be rejected.
+   * Set a hard overage spending limit (in USD). When reached, API calls will be rejected.
    *
-   * @param hardLimitPln - Maximum overage spending in PLN
+   * @param hardLimitUsd - Maximum monthly overage spending in USD.
+   *   Pass 0 to disable (the wallet balance then becomes the only cap).
    * @param projectId - Optional project ID to scope the limit
    * @returns Updated overage configuration
    *
    * @example
    * ```typescript
-   * await client.setOverageLimit(100); // 100 PLN hard cap
+   * await client.setOverageLimit(100); // $100 hard cap
    * ```
    */
-  async setOverageLimit(hardLimitPln: number, projectId?: string): Promise<OverageResult> {
+  async setOverageLimit(hardLimitUsd: number, projectId?: string): Promise<OverageResult> {
     const body: Record<string, unknown> = {
-      hard_limit_pln: hardLimitPln,
+      hard_limit_usd: hardLimitUsd,
     };
 
     if (projectId !== undefined) body.project_id = projectId;
@@ -1021,7 +1160,7 @@ export class FotoHub {
    * ```typescript
    * const packages = await client.getTopupPackages();
    * for (const pkg of packages) {
-   *   console.log(`${pkg.name}: ${pkg.credits} credits for ${pkg.price_pln} PLN`);
+   *   console.log(`${pkg.name}: $${pkg.amount_usd} (+${pkg.bonus_credits} bonus credits)`);
    * }
    * ```
    */
@@ -1096,7 +1235,7 @@ export class FotoHub {
    *   { type: "image", model: "seedream-5-0-260128", count: 4 },
    *   { type: "video", model: "veo-2", duration: 10 },
    * ]);
-   * console.log(`Total: ${estimate.total_credits} credits (${estimate.total_pln} PLN)`);
+   * console.log(`Total: ${estimate.total_credits} credits ($${estimate.total_usd})`);
    * ```
    */
   async estimateCost(operations: CostOperation[]): Promise<CostEstimate> {
@@ -1708,22 +1847,41 @@ export class FotoHub {
   }
 
   /**
-   * Top up the wallet balance (returns a payment session URL).
+   * Top up the wallet balance (returns a Stripe checkout URL).
    *
-   * @param amount - Amount in PLN to add
-   * @returns Payment session URL
+   * @param amountUsd - Amount in USD to add (minimum 10, maximum 15000)
+   * @param payCurrency - Optional Stripe charge currency. Defaults to "usd";
+   *   pass "pln" to let a Polish customer pay by BLIK/card/bank transfer while
+   *   the wallet is still credited `amountUsd`.
+   * @returns Checkout URL plus the credited USD amount and bonus credits
    *
    * @example
    * ```typescript
-   * const { session_url } = await client.topupWallet(100);
-   * // Redirect user to session_url for payment
+   * const { checkout_url } = await client.topupWallet(100);
+   * // Redirect user to checkout_url for payment
    * ```
    */
-  async topupWallet(amount: number): Promise<{ session_url: string }> {
-    return await this.request<{ session_url: string }>({
+  async topupWallet(
+    amountUsd: number,
+    payCurrency?: "usd" | "pln"
+  ): Promise<{
+    checkout_url: string;
+    amount_usd: number;
+    pay_currency: string;
+    bonus_credits: number;
+  }> {
+    const body: Record<string, unknown> = { amount_usd: amountUsd };
+    if (payCurrency !== undefined) body.pay_currency = payCurrency;
+
+    return await this.request<{
+      checkout_url: string;
+      amount_usd: number;
+      pay_currency: string;
+      bonus_credits: number;
+    }>({
       method: "POST",
       path: "/v1/tiers/wallet/topup",
-      body: { amount },
+      body,
       requiresAuth: true,
     });
   }
@@ -2128,12 +2286,16 @@ export class FotoHub {
     switch (response.status) {
       case 401:
         return new AuthenticationError(message);
-      case 402:
+      case 402: {
+        // The API is Python, so any structured fields arrive snake_case. The
+        // camelCase reads are kept as a fallback for a gateway that rewrites.
+        const d = error?.details as Record<string, number> | undefined;
         return new InsufficientCreditsError(
           message,
-          (error?.details as Record<string, number> | undefined)?.creditsRequired,
-          (error?.details as Record<string, number> | undefined)?.creditsAvailable
+          d?.credits_required ?? d?.creditsRequired,
+          d?.credits_available ?? d?.creditsAvailable
         );
+      }
       case 403:
         return new PermissionError(message);
       case 404:
@@ -2162,6 +2324,45 @@ export class FotoHub {
     body: unknown
   ): { message: string; code: string; details?: Record<string, unknown> } | undefined {
     if (typeof body !== "object" || body === null) return undefined;
+
+    // { detail: ... } — the API is FastAPI, so this is the shape of *every*
+    // error it raises. This branch has to come first: without it every message
+    // fell through to response.statusText ("Payment Required" rather than
+    // "Insufficient wallet balance. Need $0.42."), and creditsRequired and the
+    // validation details were always undefined.
+    if ("detail" in body) {
+      const detail = (body as Record<string, unknown>).detail;
+
+      if (typeof detail === "string") {
+        return { message: detail, code: "unknown" };
+      }
+
+      // FastAPI request validation: [{ loc, msg, type }, ...]
+      if (Array.isArray(detail)) {
+        const msgs = detail
+          .map((d) =>
+            typeof d === "object" && d !== null
+              ? String((d as Record<string, unknown>).msg ?? "")
+              : ""
+          )
+          .filter(Boolean);
+        return {
+          message: msgs.length > 0 ? msgs.join("; ") : "Validation failed",
+          code: "validation_error",
+          details: { errors: detail },
+        };
+      }
+
+      // A few endpoints (tier_enforcer) raise a dict detail.
+      if (typeof detail === "object" && detail !== null) {
+        const d = detail as Record<string, unknown>;
+        return {
+          message: String(d.message ?? d.error ?? d.detail ?? "Unknown error"),
+          code: String(d.code ?? d.error ?? "unknown"),
+          details: d,
+        };
+      }
+    }
 
     // { error: { message, code } }
     if ("error" in body) {

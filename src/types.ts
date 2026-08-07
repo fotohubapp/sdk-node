@@ -138,7 +138,14 @@ export interface EditResult {
 export interface GenerateVideoOptions {
   /** Text prompt describing the video to generate */
   prompt: string;
-  /** Model ID. Supported: veo-2, veo-3, wan, kling, hailuo, seedance, sora-2 */
+  /**
+   * Model ID. See GET /v1/models?category=video for the full list. Examples:
+   * veo-3.1-generate-001, wan2.2-t2v-plus, kling-v3, hailuo-o2, sora-2,
+   * grok-imagine-video-1.5, gemini-omni-flash.
+   *
+   * Seedance models are asynchronous and are not reachable through this method —
+   * use `generateSeedance()`, which submits and polls for you.
+   */
   model?: string;
   /** Duration in seconds */
   duration?: number;
@@ -182,6 +189,103 @@ export interface PollOptions {
   maxWait?: number;
   /** Callback for status updates */
   onProgress?: (result: VideoResult) => void;
+}
+
+/** A reference item: a URL, or an inline blob. */
+export type SeedanceReference = string | { mimeType: string; base64: string };
+
+export interface GenerateSeedanceOptions {
+  /** Text prompt describing the video to generate */
+  prompt: string;
+  /**
+   * Seedance model id. Defaults to `seedance-2-5` — the only model that reaches
+   * 30s in a single request, and the only one that accepts a source video.
+   * Others: seedance-2-0-pro / -fast / -mini, seedance-1-5-pro-251215,
+   * seedance-1-0-pro-250528, seedance-1-0-pro-fast-251015.
+   */
+  model?: string;
+  /**
+   * Duration in seconds. 2.5 takes any integer 4-30, 2.0 takes 4-15, 1.x takes
+   * 5-10. Pass -1 to match a source clip's length (billed at the model ceiling,
+   * since the real length is unknown until the clip is decoded).
+   */
+  duration?: number;
+  /**
+   * Output resolution. `seedance-2-5` accepts only 480p and 720p — 1080p and 4K
+   * return a 400 rather than downgrading silently, because price scales with
+   * resolution. `seedance-2-0-pro` accepts all four.
+   */
+  resolution?: "480p" | "720p" | "1080p" | "4K";
+  /** 16:9 | 9:16 | 1:1 | 4:3 | 3:4 | 21:9 | adaptive */
+  aspect_ratio?: string;
+  /** Native soundtrack. Free on 2.5 — the per-second rate is the same either way. */
+  generate_audio?: boolean;
+  /** First frame (image-to-video) */
+  image_url?: string;
+  /** Final frame */
+  last_frame_url?: string;
+  /** Up to 30 on 2.5 (9 on 2.0) */
+  reference_images?: SeedanceReference[];
+  /**
+   * Up to 10 on 2.5 (3 on 2.0). Attaching one switches the request to
+   * reference / editing / extension mode and raises the rate to 17.6 credits/s
+   * at 720p, because the source frames bill as input.
+   */
+  reference_videos?: SeedanceReference[];
+  /** Up to 10 on 2.5 (3 on 2.0). Requires at least one image or video reference. */
+  reference_audios?: SeedanceReference[];
+  /** Pre-registered `asset://` portrait ids from `registerVideoAsset()` */
+  asset_ids?: string[];
+  /** Output container. 2.5 only. */
+  output_format?: "mp4" | "mov";
+  /** Recorded on the job */
+  negative_prompt?: string;
+  /** Recorded on the job */
+  seed?: number;
+  /** HTTPS URL POSTed once the job reaches a terminal state */
+  callback_url?: string;
+  /** Let the model pick the aspect ratio */
+  smart_ratio?: boolean;
+  /** Let the model pick the duration */
+  smart_duration?: boolean;
+  /** Milliseconds between status checks. Defaults to 10000 (10s). */
+  pollInterval?: number;
+  /**
+   * Maximum milliseconds to wait before throwing. Defaults to 1800000 (30 min);
+   * a 30s 720p render takes ~4 minutes, plus queue time.
+   */
+  maxWait?: number;
+  /** Called on every poll with the in-flight job */
+  onProgress?: (result: SeedanceResult) => void;
+}
+
+export interface SeedanceResult extends VideoResult {
+  /** 0-100 while rendering */
+  progress?: number;
+  /** Resolution actually rendered */
+  resolution?: string;
+  /** Aspect ratio actually rendered ("adaptive" for editing/extension) */
+  aspect_ratio?: string;
+  /** Whether a native soundtrack was generated */
+  generate_audio?: boolean;
+  /** Which task type the model inferred: t2v | reference | editing | extension | frames */
+  task_type?: string;
+  /** Poll URL returned on submit */
+  poll_url?: string;
+  /** Rough wall-clock estimate in seconds, returned on submit */
+  estimated_seconds?: number;
+  /** Charge detail — `breakdown` carries credits_per_second, duration, resolution */
+  billing?: Record<string, unknown>;
+  created_at?: string;
+  completed_at?: string;
+  error_message?: string;
+}
+
+export interface RegisterVideoAssetResult {
+  asset_id: string;
+  /** The `asset://…` URI to pass in `asset_ids` */
+  uri: string;
+  status: string;
 }
 
 // ─── Music Generation ────────────────────────────────────────────────────────
@@ -503,16 +607,28 @@ export interface PricingCatalog {
 }
 
 export interface ApiPlan {
-  /** Plan identifier */
-  id: string;
+  /** Plan identifier (e.g. "api-developer") */
+  slug: string;
   /** Plan display name */
   name: string;
-  /** Monthly price */
-  price_monthly: number;
+  /**
+   * Monthly subscription price in PLN. API tier subscriptions are still
+   * billed in PLN; only the PAYG wallet and per-request overage moved to USD
+   * on 2026-08-05.
+   */
+  price_pln: number;
   /** Included credits per month */
-  credits_included: number;
+  credits_monthly: number;
+  /** Requests-per-minute rate limit */
+  rate_limit_rpm: number;
   /** Plan features */
   features: string[];
+  /** @deprecated Not returned by the API. Use `slug`. */
+  id?: string;
+  /** @deprecated Not returned by the API. Use `price_pln`. */
+  price_monthly?: number;
+  /** @deprecated Not returned by the API. Use `credits_monthly`. */
+  credits_included?: number;
 }
 
 export interface CreditsInfo {
@@ -529,8 +645,14 @@ export interface CreditsInfo {
 export interface OverageResult {
   /** Whether overage is enabled */
   enabled: boolean;
-  /** Hard limit in PLN */
-  hard_limit_pln: number;
+  /** Hard monthly overage limit in USD */
+  hard_limit_usd: number;
+  /**
+   * @deprecated Never returned by the API. The endpoint still ACCEPTS
+   * `hard_limit_pln` as a request key (read directly as USD, not converted),
+   * but the response only carries `hard_limit_usd`.
+   */
+  hard_limit_pln?: number;
   /** Project ID (if project-scoped) */
   project_id?: string;
 }
@@ -538,10 +660,15 @@ export interface OverageResult {
 export interface TopupPackage {
   /** Package slug identifier (e.g. "topup-100") */
   slug: string;
-  /** Display name (e.g. "100 PLN") */
+  /** Display name (e.g. "$25") */
   name: string;
-  /** Charge amount in PLN */
-  amount_pln: number;
+  /** Charge amount in USD */
+  amount_usd: number;
+  /**
+   * @deprecated Removed from the API on 2026-08-05. Top-up packages are
+   * USD-only; use `amount_usd`.
+   */
+  amount_pln?: number;
   /** Bonus credits granted on purchase */
   bonus_credits: number;
   /** Bonus percentage */
@@ -604,9 +731,9 @@ export interface CostOperation {
 export interface CostEstimate {
   /** Total credits required */
   total_credits: number;
-  /** Total cost in PLN */
-  total_pln: number;
-  /** Currency */
+  /** Total cost in USD */
+  total_usd: number;
+  /** Currency (always "USD") */
   currency: string;
   /** Per-operation breakdown */
   breakdown: CostBreakdownItem[];
@@ -617,10 +744,12 @@ export interface CostBreakdownItem {
   type: string;
   /** Model used */
   model?: string;
+  /** Duration in seconds (video/music operations) */
+  duration?: number;
   /** Credits for this item */
   credits: number;
-  /** PLN cost for this item */
-  pln: number;
+  /** USD cost for this item */
+  price_usd: number;
 }
 
 export interface Invoice {
@@ -852,7 +981,7 @@ export interface TryOnSubmitResult {
   status: string;
   category: string;
   credits_used: number;
-  billing: { method: string; pln_charged: number };
+  billing: { method: string; usd_charged: number; pln_charged: number };
   estimated_seconds: number;
   poll_url: string;
 }
@@ -892,7 +1021,11 @@ export interface TierCatalogEntry {
   name: string;
   /** Tier type */
   type: "payg" | "subscription";
-  /** Monthly price in PLN (0 for PAYG) */
+  /**
+   * Monthly subscription price in PLN (0 for PAYG). API tier subscriptions
+   * are still billed in PLN; only the PAYG wallet and per-request overage
+   * moved to USD on 2026-08-05.
+   */
   price_monthly: number;
   /** Monthly credit allowance (-1 for unlimited) */
   credits_monthly: number;
@@ -952,7 +1085,7 @@ export interface TierComparison {
 }
 
 export interface WalletInfo {
-  /** Current balance in PLN */
+  /** Current balance in USD */
   balance: number;
   /** Currency code */
   currency: string;
