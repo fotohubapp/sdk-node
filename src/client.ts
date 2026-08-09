@@ -102,7 +102,7 @@ const DEFAULT_IMAGE_MODEL = "seedream-5-0-260128";
 // it has its own method rather than being reachable through generateVideo().
 const DEFAULT_SEEDANCE_MODEL = "seedance-2-5";
 
-const SDK_VERSION = "1.8.0";
+const SDK_VERSION = "1.9.0";
 const USER_AGENT = `fotohub-sdk-node/${SDK_VERSION}`;
 
 /**
@@ -195,6 +195,7 @@ export class FotoHub {
     if (options.height !== undefined) body.height = options.height;
     if (options.aspect_ratio !== undefined) body.aspect_ratio = options.aspect_ratio;
     if (options.num_images !== undefined) body.num_images = options.num_images;
+    if (options.image_size !== undefined) body.image_size = options.image_size;
     if (options.guidance_scale !== undefined) body.guidance_scale = options.guidance_scale;
     if (options.steps !== undefined) body.steps = options.steps;
     if (options.seed !== undefined) body.seed = options.seed;
@@ -317,9 +318,19 @@ export class FotoHub {
   }
 
   /**
-   * Generate a video from a text prompt. This call is synchronous — it resolves
-   * once the video is ready, and the returned result already contains
-   * `video_url`. There is no separate job to poll.
+   * Generate a video from a text prompt, resolving once the file is ready.
+   *
+   * Most models render inside the request. Some (Alibaba Wan, xAI Grok) answer
+   * immediately with `status: "processing"` and a `job_id` instead, so this
+   * polls until the job reaches a terminal state — either way the resolved
+   * result carries `video_url`.
+   *
+   * `duration` is snapped to a length the provider actually renders (Veo accepts
+   * only 4/6/8s, Kling 5/10s) and the charge follows the snapped value, so read
+   * `duration` on the result rather than assuming your request.
+   *
+   * Credits for a failed video are refunded automatically, so a thrown
+   * {@link JobFailedError} does not mean you paid for an undelivered render.
    *
    * @param options - Video generation parameters
    * @returns Completed video result with `video_url`
@@ -350,12 +361,56 @@ export class FotoHub {
     if (options.guidance_scale !== undefined) body.guidance_scale = options.guidance_scale;
     if (options.fps !== undefined) body.fps = options.fps;
 
-    return await this.request<VideoResult>({
+    const submitted = await this.request<VideoResult>({
       method: "POST",
       path: "/v1/ai/generate/video",
       body,
       requiresAuth: true,
     });
+
+    // Already finished, or queued with nothing pollable: hand it back as-is.
+    if (submitted.video_url || submitted.status !== "processing" || !submitted.job_id) {
+      return submitted;
+    }
+
+    const jobId = submitted.job_id;
+    const pollInterval = options.pollInterval ?? 5_000;
+    const maxWait = options.maxWait ?? 900_000;
+    const startTime = Date.now();
+
+    while (true) {
+      if (Date.now() - startTime >= maxWait) {
+        throw new JobTimeoutError(
+          jobId,
+          `Video job ${jobId} did not complete within ${Math.round(maxWait / 1000)}s. ` +
+            `It may still finish — poll GET /v1/ai/generate/video/${jobId}.`
+        );
+      }
+
+      await this.sleep(pollInterval);
+
+      const result = await this.request<VideoResult>({
+        method: "GET",
+        path: `/v1/ai/generate/video/${jobId}`,
+        requiresAuth: true,
+      });
+
+      options.onProgress?.(result);
+
+      // The poll route reports job state, not the charge — only the submit
+      // response carries `credits_used`. Returning the poll body alone left
+      // `credits_used` undefined on exactly the models that queue, so carry it
+      // across rather than making callers hold on to the submit result.
+      if (result.status === "completed") {
+        return { ...result, credits_used: result.credits_used ?? submitted.credits_used };
+      }
+      if (result.status === "failed" || result.status === "cancelled") {
+        throw new JobFailedError(
+          jobId,
+          result.error || `Video job ${jobId} ${result.status}`
+        );
+      }
+    }
   }
 
   /**
@@ -2056,14 +2111,17 @@ export class FotoHub {
   /**
    * List available AI models, optionally filtered by category.
    *
-   * @param category - Optional filter: "image", "video", "music", "chat", "speech", "stability", "3d"
+   * Multiply by the duration when `price_unit` is `"second"` — every video model
+   * quotes per second, even though `pricing_type` says `"request"`.
+   *
+   * @param category - Optional filter: "image", "video", "text", "audio"
    * @returns Array of available models with pricing
    *
    * @example
    * ```typescript
-   * const models = await client.listModels("image");
+   * const models = await client.listModels("video");
    * for (const m of models) {
-   *   console.log(`${m.name} (${m.id}): ${m.credit_cost} credits`);
+   *   console.log(`${m.name} (${m.id}): $${m.request_price} per ${m.request_price_per}`);
    * }
    * ```
    */
@@ -2071,12 +2129,19 @@ export class FotoHub {
     const query: Record<string, string | undefined> = {};
     if (category) query.category = category;
 
-    return await this.request<Model[]>({
+    // The endpoint answers `{ "models": [...] }`, which is neither the SDK's
+    // `{ success, data }` envelope nor a bare array — so requesting `Model[]`
+    // here handed callers the wrapper object typed as an array, and the
+    // documented `for (const m of models)` threw "models is not iterable".
+    const response = await this.request<{ models?: Model[] } | Model[]>({
       method: "GET",
       path: "/v1/models",
       query: query as Record<string, string>,
       requiresAuth: true,
     });
+
+    if (Array.isArray(response)) return response;
+    return response?.models ?? [];
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

@@ -26,8 +26,18 @@ export interface GenerateImageOptions {
   height?: number;
   /** Aspect ratio (e.g. "16:9", "1:1", "4:3"). Alternative to width/height */
   aspect_ratio?: string;
-  /** Number of images to generate (1-4) */
+  /**
+   * Whole number of images, 1-8. Charged per image the provider actually
+   * delivers: each caps the count at its own maximum and the difference is
+   * refunded automatically, so `credits_used` always matches `images.length`.
+   */
   num_images?: number;
+  /**
+   * Resolution tier: "1K" | "1.5K" | "2K" | "3K" | "4K". This is priced — 4K
+   * costs more than 1K on any model offering it. Omit to bill the model's 1K
+   * base rate; `width`/`height` are mapped onto a tier when it is absent.
+   */
+  image_size?: "1K" | "1.5K" | "2K" | "3K" | "4K";
   /** Negative prompt — what to avoid in the image */
   negative_prompt?: string;
   /** Style preset */
@@ -163,6 +173,18 @@ export interface GenerateVideoOptions {
   guidance_scale?: number;
   /** Frames per second */
   fps?: number;
+  /**
+   * Milliseconds between polls, for the models that queue instead of rendering
+   * inline (Wan, Grok). Defaults to 5000.
+   */
+  pollInterval?: number;
+  /**
+   * Milliseconds to keep polling before throwing `JobTimeoutError`. Defaults to
+   * 900000 (15 min). The job itself is unaffected and may still finish.
+   */
+  maxWait?: number;
+  /** Called with each intermediate poll result while the job is processing. */
+  onProgress?: (result: VideoResult) => void;
 }
 
 export interface VideoResult {
@@ -180,6 +202,16 @@ export interface VideoResult {
   duration: number;
   /** Thumbnail URL */
   thumbnail_url?: string;
+  /** Why the generation failed. Only present when `status` is "failed". */
+  error?: string;
+  /**
+   * Whether the credits for a failed generation were given back. `true` on the
+   * poll that performed the reversal, `false` on every later poll of the same
+   * job — meaning "already refunded", not "not refunded".
+   */
+  refunded?: boolean;
+  /** Progress percentage, 0-100, while the job runs. */
+  progress?: number;
 }
 
 export interface PollOptions {
@@ -1115,14 +1147,58 @@ export interface Model {
   id: string;
   /** Display name */
   name: string;
-  /** Model category (image, video, music, chat, speech, stability, 3d) */
+  /** Model category: "image" | "video" | "text" | "audio" */
   category: string;
   /** Provider name */
   provider: string;
-  /** Whether the model is currently available */
-  available: boolean;
-  /** Credit cost per generation */
-  credit_cost: number;
+  /** Human-readable summary, usually including the credit rate */
+  description?: string;
+  /** Whether the model is currently offered */
+  is_active: boolean;
+  /**
+   * `"token"` for per-token models (read the two per-1k fields), anything else
+   * for the rest. This does NOT tell you what a unit is — read `price_unit`.
+   */
+  pricing_type?: string;
+  /**
+   * Price of ONE unit of this model, in USD. The unit is `price_unit`, so on a
+   * video model this is per SECOND: a 5s clip costs 5x this number. `null` on
+   * token-priced models.
+   */
+  request_price: number | null;
+  /**
+   * What one unit of `request_price` buys:
+   * - `"request"` — one call (images, editing, analysis)
+   * - `"second"` — one second of output video (every video model)
+   * - `"minute"` — one minute of audio; output for music, INPUT for
+   *   transcription / audio-translation / audio-mastering / audio-stems
+   * - `"1k_characters"` — 1000 input characters (text-to-speech)
+   * - `"1k_tokens"` — read `input_price_per_1k_tokens` /
+   *   `output_price_per_1k_tokens` instead
+   */
+  price_unit: "request" | "second" | "minute" | "1k_characters" | "1k_tokens";
+  /** The same thing as `price_unit`, spelled out for humans */
+  request_price_per: string;
+  /** Always "USD" on this endpoint */
+  currency: string;
+  /** USD per 1000 input tokens, on token-priced models */
+  input_price_per_1k_tokens?: number | null;
+  /** USD per 1000 output tokens, on token-priced models */
+  output_price_per_1k_tokens?: number | null;
+  /** Per-minute request cap, when one is set */
+  request_limit_per_minute?: number | null;
+  /** Per-minute token cap, when one is set */
+  token_limit_per_minute?: number | null;
+  /** Context window in tokens, on chat models */
+  context_window?: number | null;
+  /** Output cap in tokens, on chat models */
+  max_output_tokens?: number | null;
+  /** Whether batch submission is supported */
+  supports_batch?: boolean;
+  /** Capability tags, shape varies by category */
+  features?: unknown;
+  /** Provider-specific annotations */
+  metadata?: Record<string, unknown> | null;
 }
 
 // ─── Gabriel AI Orchestrator ────────────────────────────────────────────────
