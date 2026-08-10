@@ -527,18 +527,93 @@ export interface ChatDelta {
 
 // ─── Image Analysis ──────────────────────────────────────────────────────────
 
+export type AnalyzeImageFeature =
+  | "labels"
+  | "objects"
+  | "faces"
+  | "nsfw"
+  | "colors"
+  | "ocr"
+  | "landmarks"
+  | "logos"
+  /** Alias for `ocr` */
+  | "text"
+  /** Alias for `nsfw` */
+  | "safe_search";
+
 export interface AnalyzeImageOptions {
-  /** URL of the image to analyze */
+  /** URL of the image to analyze. Must be publicly reachable, max 20MB. */
   image_url: string;
-  /** Analysis features to extract */
-  features?: ("labels" | "faces" | "nsfw" | "ocr" | "colors" | "objects")[];
+  /**
+   * Analysis features to extract. Defaults to `["labels", "objects"]`.
+   * An unrecognised name is rejected with 400 rather than ignored.
+   */
+  features?: AnalyzeImageFeature[];
+  /** Language hint for OCR. Label names are always English. `"auto"` omits the hint. */
+  language?: string;
+  /** Cap on returned labels, 1-50 (default 50) */
+  max_labels?: number;
+  /** Minimum confidence 0-1 for labels/objects/faces (default 0) */
+  min_confidence?: number;
 }
 
+/**
+ * Bounding box. Read `units`: faces and OCR come back in `pixels`, objects in
+ * `normalized` 0-1 fractions of the image width/height.
+ */
+export interface AnalysisBoundingBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  units: "pixels" | "normalized";
+}
+
+/** Vision likelihood bucket -- these features return no numeric score. */
+export type AnalysisLikelihood =
+  | "UNKNOWN"
+  | "VERY_UNLIKELY"
+  | "UNLIKELY"
+  | "POSSIBLE"
+  | "LIKELY"
+  | "VERY_LIKELY";
+
 export interface AnalysisResult {
-  /** Credits consumed */
+  /** Credits consumed -- a flat 1 regardless of how many features were requested */
   credits_used: number;
-  /** Analysis output (varies by feature) */
-  analysis: Record<string, unknown>;
+  billing?: BillingInfo;
+  image_url?: string;
+  /** Which features actually ran */
+  features_analyzed?: string[];
+  /** Flat deduplicated union of labels, objects, landmarks and logos, lower-cased */
+  auto_tags?: string[];
+  labels?: Array<{ name: string; confidence: number | null }>;
+  objects?: Array<{
+    name: string;
+    confidence: number | null;
+    bounding_box: AnalysisBoundingBox | null;
+  }>;
+  /** No age or gender: the provider returns expression likelihoods only. */
+  faces?: Array<{
+    bounding_box: AnalysisBoundingBox | null;
+    confidence: number | null;
+    likelihood: Record<string, AnalysisLikelihood>;
+  }>;
+  nsfw?: {
+    /** False when adult, violence or racy is LIKELY or worse */
+    is_safe: boolean;
+    likelihood: Record<string, AnalysisLikelihood | null>;
+  };
+  ocr?: {
+    text: string;
+    /** One entry per detected word. No per-block confidence. */
+    blocks: Array<{ text: string; bounding_box: AnalysisBoundingBox | null }>;
+  };
+  colors?: {
+    dominant: Array<{ hex: string; score: number | null; percentage: number | null }>;
+  };
+  landmarks?: Array<{ name: string; confidence: number | null }>;
+  logos?: Array<{ name: string; confidence: number | null }>;
 }
 
 // ─── Stability AI Tools ──────────────────────────────────────────────────────

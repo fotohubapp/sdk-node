@@ -102,7 +102,7 @@ const DEFAULT_IMAGE_MODEL = "seedream-5-0-260128";
 // it has its own method rather than being reachable through generateVideo().
 const DEFAULT_SEEDANCE_MODEL = "seedance-2-5";
 
-const SDK_VERSION = "1.9.0";
+const SDK_VERSION = "1.9.1";
 const USER_AGENT = `fotohub-sdk-node/${SDK_VERSION}`;
 
 /**
@@ -800,10 +800,16 @@ export class FotoHub {
   }
 
   /**
-   * Analyze an image to extract labels, faces, NSFW score, OCR text, colors, or objects.
+   * Analyze an image to extract labels, objects, faces, a content-safety verdict,
+   * OCR text, colors, landmarks or logos.
+   *
+   * Costs a flat 1 credit no matter how many features you request, so asking for
+   * everything in one call is cheaper than one call per feature. Results land on
+   * the response under the feature name (`result.labels`, `result.ocr`, ...) --
+   * there is no `analysis` wrapper. `result.auto_tags` is the flat tag list.
    *
    * @param options - Analysis parameters with image URL and feature selection
-   * @returns Analysis results (varies by selected features)
+   * @returns Analysis results (only the requested features are present)
    *
    * @example
    * ```typescript
@@ -811,7 +817,7 @@ export class FotoHub {
    *   image_url: "https://example.com/photo.jpg",
    *   features: ["labels", "colors", "ocr"],
    * });
-   * console.log(result.analysis);
+   * console.log(result.labels?.[0].name, result.ocr?.text);
    * ```
    */
   async analyzeImage(options: AnalyzeImageOptions): Promise<AnalysisResult> {
@@ -820,6 +826,9 @@ export class FotoHub {
     };
 
     if (options.features !== undefined) body.features = options.features;
+    if (options.language !== undefined) body.language = options.language;
+    if (options.max_labels !== undefined) body.max_labels = options.max_labels;
+    if (options.min_confidence !== undefined) body.min_confidence = options.min_confidence;
 
     return await this.request<AnalysisResult>({
       method: "POST",
