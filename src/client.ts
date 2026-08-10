@@ -695,6 +695,12 @@ export class FotoHub {
   /**
    * Create a chat completion (non-streaming). Compatible with OpenAI chat format.
    *
+   * Billed on the tokens actually used, so the charge is fractional and scales
+   * with the length of the answer: `credits_used` on a short reply is around
+   * 0.02, not 1. Read `billing.basis` to confirm it came from real token counts.
+   * Accepts only `gemini-flash`, `gemini-pro`, `gpt-4o` and `claude-sonnet` —
+   * any other model id is rejected with 400 rather than silently substituted.
+   *
    * @param options - Chat parameters (messages, model, temperature, etc.)
    * @returns Complete chat response with choices and usage info
    *
@@ -708,6 +714,7 @@ export class FotoHub {
    *   max_tokens: 1000,
    * });
    * console.log(response.choices[0].message.content);
+   * console.log(response.billing?.credits_used);  // e.g. 0.0255
    * ```
    */
   async chat(options: ChatOptions): Promise<ChatResult> {

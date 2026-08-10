@@ -610,10 +610,23 @@ export interface StabilityResult {
 // ─── Billing ─────────────────────────────────────────────────────────────────
 
 export interface BillingInfo {
-  /** Credits used for this operation */
+  /**
+   * Credits used for this operation. Fractional on token-billed endpoints:
+   * a short `chat()` completion costs ~0.02 credits, not a whole one.
+   */
   credits_used: number;
   /** Remaining credits after operation */
   credits_remaining?: number;
+  /** Which balance paid: included credits, or the USD wallet once they run out */
+  method?: 'credits' | 'wallet';
+  /** What actually left the wallet. `0` while `method` is `credits`. */
+  usd_charged?: number;
+  /**
+   * How the charge was derived. `tokens` on `chat()` — the real input/output
+   * counts the model reported. `flat_fallback` in the rare case a provider
+   * branch returns no usage figures and the old per-request rate applies.
+   */
+  basis?: 'tokens' | 'flat_fallback';
 }
 
 export interface BillingBalance {
