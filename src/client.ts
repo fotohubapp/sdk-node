@@ -102,8 +102,113 @@ const DEFAULT_IMAGE_MODEL = "seedream-5-0-260128";
 // it has its own method rather than being reachable through generateVideo().
 const DEFAULT_SEEDANCE_MODEL = "seedance-2-5";
 
-const SDK_VERSION = "1.9.1";
+const SDK_VERSION = "1.10.0";
 const USER_AGENT = `fotohub-sdk-node/${SDK_VERSION}`;
+
+/**
+ * Header the API reads to de-duplicate a retried charged request. The client
+ * sends one automatically on every guarded POST — see {@link idempotencyKeyFor}.
+ */
+const IDEMPOTENCY_HEADER = "X-Idempotency-Key";
+
+/**
+ * Path prefixes the API protects with `X-Idempotency-Key`. Mirrors
+ * `_IDEMPOTENT_PREFIXES` in api-server's `main.py`. Sending the header outside
+ * these prefixes is harmless (the server ignores it), but generating a key only
+ * where it does something keeps request logs honest.
+ */
+const IDEMPOTENT_PREFIXES = [
+  "/v1/ai/",
+  "/v1/images/",
+  "/v1/video/",
+  "/v1/shorts/",
+  "/v1/story/",
+  "/v1/3d/",
+  "/v1/generate/",
+  "/v1/voice/",
+] as const;
+
+/**
+ * Streaming endpoints, which the server deliberately excludes: a buffered
+ * stream cannot be replayed, and holding one back in full before its first byte
+ * reached the caller would defeat streaming. Mirrors
+ * `_IDEMPOTENCY_EXCLUDE_PREFIXES` server-side.
+ */
+const IDEMPOTENCY_EXCLUDE_PREFIXES = [
+  "/v1/ai/chat",
+  "/v1/ai/agent/stream",
+  "/v1/ai/gabriel",
+  "/v1/ai/tts/",
+  "/v1/story/generate",
+] as const;
+
+/** Monotonic suffix, so two keys minted in the same millisecond still differ. */
+let idempotencyCounter = 0;
+
+/**
+ * A random, collision-resistant key.
+ *
+ * `crypto.randomUUID()` is not universally available: in Node 18 (this
+ * package's declared floor) the Web Crypto global needed
+ * `--experimental-global-webcrypto`, and in a browser `crypto` is only exposed
+ * in a secure context. This walks down to `getRandomValues` and then to
+ * `Math.random`, because a key that is merely unique is worth far more here than
+ * no key at all — without one, a retry is a second charge.
+ */
+function randomIdempotencyKey(): string {
+  const c: Crypto | undefined = (globalThis as { crypto?: Crypto }).crypto;
+  if (typeof c?.randomUUID === "function") {
+    return c.randomUUID();
+  }
+  const suffix = `-${(idempotencyCounter++).toString(36)}`;
+  if (typeof c?.getRandomValues === "function") {
+    const bytes = c.getRandomValues(new Uint8Array(16));
+    return (
+      Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("") + suffix
+    );
+  }
+  // Last resort. Not cryptographic, but the key only has to be unique within
+  // one API credential's 24-hour window.
+  return (
+    `${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}` +
+    `${Date.now().toString(36)}${suffix}`
+  );
+}
+
+/**
+ * A fresh key for one logical call, or `undefined` if the call is not guarded.
+ *
+ * Minted per `rawRequest` invocation, NOT per HTTP attempt: that is the whole
+ * point. This client retries 429/408 and 5xx up to `maxRetries` times by
+ * default, and a 504 arriving after a render had already started used to bill
+ * the same job again on every retry. Reusing one key across the attempts of a
+ * single call turns those retries into replays.
+ *
+ * A key is deliberately never carried across separate calls: two calls with the
+ * same arguments are two requests the caller asked for, and collapsing them
+ * would lose a generation somebody paid for.
+ */
+function idempotencyKeyFor(options: RequestOptions): string | undefined {
+  if (options.method !== "POST" && options.method !== "PUT" && options.method !== "PATCH") {
+    return undefined;
+  }
+  if (options.stream) return undefined;
+  // An explicit key on the request wins. No public method exposes `headers`
+  // today, so this branch is currently only reachable internally — it is here
+  // so that the first method to take custom headers cannot silently clobber a
+  // caller's own key, which would be a de-duplication bug with a charge behind
+  // it. A caller-supplied key can be stable across process restarts; the one
+  // minted below deliberately cannot.
+  if (options.headers) {
+    for (const name of Object.keys(options.headers)) {
+      if (name.toLowerCase() === IDEMPOTENCY_HEADER.toLowerCase()) return undefined;
+    }
+  }
+  const path = options.path;
+  if (!IDEMPOTENT_PREFIXES.some((p) => path.startsWith(p))) return undefined;
+  if (IDEMPOTENCY_EXCLUDE_PREFIXES.some((p) => path.startsWith(p))) return undefined;
+  return randomIdempotencyKey();
+}
 
 /**
  * FOTOhub AI Platform SDK client.
@@ -2228,6 +2333,14 @@ export class FotoHub {
     const headers = this.buildHeaders(options);
     const timeout = options.timeout ?? this.timeout;
 
+    // One key for this logical call, reused by every retry below, so a timeout
+    // or 5xx that arrives after the work already started is replayed instead of
+    // charged again. See idempotencyKeyFor().
+    const idempotencyKey = idempotencyKeyFor(options);
+    if (idempotencyKey) {
+      headers[IDEMPOTENCY_HEADER] = idempotencyKey;
+    }
+
     let lastError: Error | undefined;
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
@@ -2256,6 +2369,21 @@ export class FotoHub {
 
           // Retry on rate limit and timeout
           if (response.status === 429 || response.status === 408) {
+            lastError = error;
+            continue;
+          }
+
+          // 409 on a guarded endpoint carrying our key means a request with
+          // this same key is still in flight — which is our own earlier
+          // attempt. Wait and collect its result; surfacing the 409 would
+          // report a failure for work that is running and will be charged
+          // exactly once. Without a key a 409 is a genuine conflict and falls
+          // through to the throw below.
+          if (
+            response.status === 409 &&
+            idempotencyKey &&
+            attempt < this.maxRetries
+          ) {
             lastError = error;
             continue;
           }

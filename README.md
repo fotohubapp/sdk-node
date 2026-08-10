@@ -670,9 +670,52 @@ The SDK automatically retries failed requests with exponential backoff:
 | 408 Timeout | Yes |
 | 5xx Server Error | Yes |
 | Network errors | Yes |
-| 401, 402, 403, 404, 422 | No |
+| 409 with an idempotency key (your earlier attempt is still in flight) | Yes |
+| 401, 402, 403, 404, 409, 422 | No |
 
 **Backoff schedule:** 1s, 2s, 4s (capped at 8s)
+
+### Idempotency — retries do not double-charge
+
+Retrying a call that spends credits is only safe if the server can tell the
+retry apart from a new request. The dangerous case is a `504` or a timeout that
+arrives *after* the generation already started: the work is running and will be
+billed, but the client sees a failure.
+
+Since **1.10.0** the SDK sends an `X-Idempotency-Key` on every request that can
+charge you, and every retry of one call reuses that same key. The API replays
+the original result instead of running the operation again, so a call that
+retried three times is still charged once. Nothing to configure.
+
+```typescript
+// All three attempts inside this call share one idempotency key.
+const result = await client.generateImage({ prompt: "Product photo" });
+```
+
+Two separate calls always get two different keys, even with identical
+arguments — asking twice means you want two generations, and collapsing them
+would lose one you paid for.
+
+That scoping is deliberate, and it is also the limit of what the SDK can do for
+you: it protects the retries *inside* one call. If you need de-duplication
+across process restarts — a job queue that may redeliver the same work after a
+crash — the SDK cannot know two runs are the same job, so call the endpoint over
+HTTP with your own stable key (derive it from the job id):
+
+```typescript
+await fetch("https://apis.fotohub.app/v1/ai/generate/image", {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${process.env.FOTOHUB_API_KEY}`,
+    "Content-Type": "application/json",
+    "X-Idempotency-Key": `job-${jobId}`, // stable across restarts
+  },
+  body: JSON.stringify({ prompt: "Product photo" }),
+});
+```
+
+Streaming endpoints (`chat`, `gabriel`, TTS, story) are excluded, because a
+stream cannot be buffered and replayed.
 
 ```typescript
 // Increase retries for critical workloads
