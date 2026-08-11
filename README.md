@@ -477,7 +477,7 @@ and have no SDK wrapper — see the
 for (const pkg of await client.getTopupPackages()) {
   // The slugs are historical — topup-50 is now the $15 package. Read
   // amount_usd, never the number in the slug.
-  console.log(pkg.slug, pkg.amount_usd, `+${pkg.bonus_pct}% bonus credits`);
+  console.log(pkg.slug, pkg.amount_usd, "credited to the wallet");
 }
 
 // topupWallet takes positional arguments, not an options object.

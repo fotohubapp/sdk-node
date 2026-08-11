@@ -789,10 +789,15 @@ export interface TopupPackage {
    * USD-only; use `amount_usd`.
    */
   amount_pln?: number;
-  /** Bonus credits granted on purchase */
-  bonus_credits: number;
-  /** Bonus percentage */
-  bonus_pct: number;
+  /**
+   * @deprecated Never granted. The top-up webhook credits `amount_usd` and
+   * nothing else, so this described a transfer no code performed; the API has
+   * no credits to grant in any case. `/v1/tiers/wallet/topup` still returns the
+   * key as `null` for one release and the package list omits it entirely.
+   */
+  bonus_credits?: number | null;
+  /** @deprecated Never applied — see `bonus_credits`. */
+  bonus_pct?: number | null;
 }
 
 export interface TopupResult {

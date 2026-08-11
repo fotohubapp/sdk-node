@@ -89,27 +89,93 @@ export class RateLimitError extends FotoHubError {
 }
 
 /**
- * Thrown when the user has insufficient credits for the operation (HTTP 402).
- * Contains information about the credits required vs available.
+ * Thrown when the prepaid wallet cannot cover the operation (HTTP 402).
+ *
+ * The FOTOhub API is prepaid in USD. Credits exist only in the fotohub.app web
+ * app and can never pay for an API call, so this error is about dollars: the
+ * request was refused, **nothing was charged**, and the wallet needs topping up
+ * at {@link InsufficientFundsError.topupUrl}.
+ *
+ * @example
+ * ```typescript
+ * try {
+ *   await client.generateImage({ prompt: "a cat", model: "seedream-5-0-260128" });
+ * } catch (err) {
+ *   if (err instanceof InsufficientFundsError) {
+ *     console.error(`Need $${err.shortfallUsd} more — top up: ${err.topupUrl}`);
+ *   }
+ * }
+ * ```
  */
-export class InsufficientCreditsError extends FotoHubError {
+export class InsufficientFundsError extends FotoHubError {
+  /** USD price of the refused request. */
+  public readonly requiredUsd: number | undefined;
+  /** USD wallet balance at the time of the refusal. */
+  public readonly balanceUsd: number | undefined;
+  /** The minimum top-up that would let this request through. */
+  public readonly shortfallUsd: number | undefined;
+  /** Where to add funds. */
+  public readonly topupUrl: string | undefined;
+  /** The operation that was refused, e.g. `generate_image:seedream-5-0-pro`. */
+  public readonly operation: string | undefined;
+
+  /**
+   * Credits the operation would have cost.
+   *
+   * @deprecated Always `undefined` against a current server: the API has no
+   * credits. Use {@link requiredUsd}. Removed in the next major version.
+   */
   public readonly creditsRequired: number | undefined;
+  /**
+   * Credits available.
+   *
+   * @deprecated Always `undefined` against a current server. Use
+   * {@link balanceUsd}. Removed in the next major version.
+   */
   public readonly creditsAvailable: number | undefined;
 
   constructor(
-    message: string = "Insufficient credits",
-    creditsRequired?: number,
-    creditsAvailable?: number
+    message: string = "Insufficient funds in your prepaid wallet",
+    fields: {
+      requiredUsd?: number;
+      balanceUsd?: number;
+      shortfallUsd?: number;
+      topupUrl?: string;
+      operation?: string;
+      creditsRequired?: number;
+      creditsAvailable?: number;
+    } = {}
   ) {
-    super(message, "insufficient_credits", 402, {
-      creditsRequired,
-      creditsAvailable,
-    });
-    this.name = "InsufficientCreditsError";
-    this.creditsRequired = creditsRequired;
-    this.creditsAvailable = creditsAvailable;
+    super(message, "insufficient_funds", 402, { ...fields });
+    this.name = "InsufficientFundsError";
+    this.requiredUsd = fields.requiredUsd;
+    this.balanceUsd = fields.balanceUsd;
+    this.shortfallUsd = fields.shortfallUsd;
+    this.topupUrl = fields.topupUrl;
+    this.operation = fields.operation;
+    this.creditsRequired = fields.creditsRequired;
+    this.creditsAvailable = fields.creditsAvailable;
+  }
+
+  /** Nothing was charged for a refused request. Always `false`. */
+  public get charged(): boolean {
+    return false;
   }
 }
+
+/**
+ * @deprecated Renamed to {@link InsufficientFundsError} — the API is prepaid in
+ * USD and has no credits. This alias is the SAME class, so existing
+ * `catch (e) { if (e instanceof InsufficientCreditsError) }` code keeps working
+ * and will also catch the new name. It is removed in the next major version.
+ *
+ * Note the `code` on a thrown error is now `insufficient_funds`, matching the
+ * server. Code that compares `err.code === "insufficient_credits"` must be
+ * updated; an `instanceof` check needs no change.
+ */
+export const InsufficientCreditsError = InsufficientFundsError;
+/** @deprecated Use {@link InsufficientFundsError}. */
+export type InsufficientCreditsError = InsufficientFundsError;
 
 /**
  * Thrown when the API returns a 422 Unprocessable Entity response.

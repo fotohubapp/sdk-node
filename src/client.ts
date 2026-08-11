@@ -80,7 +80,7 @@ import {
   PermissionError,
   NotFoundError,
   RateLimitError,
-  InsufficientCreditsError,
+  InsufficientFundsError,
   ValidationError,
   TimeoutError,
   NetworkError,
@@ -1328,7 +1328,10 @@ export class FotoHub {
   }
 
   /**
-   * Get available credit top-up packages.
+   * Get available wallet top-up packages.
+   *
+   * Each package credits its face value in USD to the prepaid wallet — there is
+   * no bonus and no credit unit involved.
    *
    * @returns Array of purchasable top-up packages
    *
@@ -1336,7 +1339,7 @@ export class FotoHub {
    * ```typescript
    * const packages = await client.getTopupPackages();
    * for (const pkg of packages) {
-   *   console.log(`${pkg.name}: $${pkg.amount_usd} (+${pkg.bonus_credits} bonus credits)`);
+   *   console.log(`${pkg.name}: $${pkg.amount_usd} credited to the wallet`);
    * }
    * ```
    */
@@ -2045,7 +2048,7 @@ export class FotoHub {
    * @param payCurrency - Optional Stripe charge currency. Defaults to "usd";
    *   pass "pln" to let a Polish customer pay by BLIK/card/bank transfer while
    *   the wallet is still credited `amountUsd`.
-   * @returns Checkout URL plus the credited USD amount and bonus credits
+   * @returns Checkout URL plus the USD amount the wallet is credited on payment
    *
    * @example
    * ```typescript
@@ -2060,7 +2063,8 @@ export class FotoHub {
     checkout_url: string;
     amount_usd: number;
     pay_currency: string;
-    bonus_credits: number;
+    /** @deprecated Always `null` — no bonus was ever granted. */
+    bonus_credits?: number | null;
   }> {
     const body: Record<string, unknown> = { amount_usd: amountUsd };
     if (payCurrency !== undefined) body.pay_currency = payCurrency;
@@ -2069,7 +2073,7 @@ export class FotoHub {
       checkout_url: string;
       amount_usd: number;
       pay_currency: string;
-      bonus_credits: number;
+      bonus_credits?: number | null;
     }>({
       method: "POST",
       path: "/v1/tiers/wallet/topup",
@@ -2512,14 +2516,46 @@ export class FotoHub {
       case 401:
         return new AuthenticationError(message);
       case 402: {
-        // The API is Python, so any structured fields arrive snake_case. The
-        // camelCase reads are kept as a fallback for a gateway that rewrites.
-        const d = error?.details as Record<string, number> | undefined;
-        return new InsufficientCreditsError(
-          message,
-          d?.credits_required ?? d?.creditsRequired,
-          d?.credits_available ?? d?.creditsAvailable
-        );
+        // `extractError` hoists a dict `detail` into `details`, so this is the
+        // server's flat funds payload: required_usd, balance_usd, shortfall_usd,
+        // topup_url, charged, operation.
+        //
+        // What was wrong was the field NAMES. This read `credits_required` /
+        // `credits_available`, which the prepaid API never sends, so every 402
+        // surfaced with both figures `undefined` — a developer got "insufficient"
+        // with no price, no balance, and no top-up link, and the numbers were
+        // sitting right there in the response.
+        const d = (error?.details ?? {}) as Record<string, unknown>;
+        const num = (...keys: string[]): number | undefined => {
+          for (const k of keys) {
+            const v = d[k];
+            // Typed checks rather than truthiness: a $0 balance is the commonest
+            // case of this error and is the single figure worth printing.
+            if (typeof v === "number") return v;
+            if (typeof v === "string" && v !== "" && !Number.isNaN(Number(v))) {
+              return Number(v);
+            }
+          }
+          return undefined;
+        };
+        const str = (...keys: string[]): string | undefined => {
+          for (const k of keys) {
+            const v = d[k];
+            if (typeof v === "string" && v !== "") return v;
+          }
+          return undefined;
+        };
+
+        return new InsufficientFundsError(message, {
+          requiredUsd: num("required_usd", "requiredUsd"),
+          balanceUsd: num("balance_usd", "balanceUsd"),
+          shortfallUsd: num("shortfall_usd", "shortfallUsd"),
+          topupUrl: str("topup_url", "topupUrl"),
+          operation: str("operation"),
+          // Only from a pre-cutover server. A current one never sends these.
+          creditsRequired: num("credits_required", "creditsRequired"),
+          creditsAvailable: num("credits_available", "creditsAvailable"),
+        });
       }
       case 403:
         return new PermissionError(message);

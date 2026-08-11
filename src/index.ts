@@ -45,6 +45,10 @@ export {
   PermissionError,
   NotFoundError,
   RateLimitError,
+  InsufficientFundsError,
+  // Deprecated alias for InsufficientFundsError, still exported one major
+  // version: the API is prepaid in USD and has no credits. Same class object, so
+  // an existing `instanceof InsufficientCreditsError` catch keeps working.
   InsufficientCreditsError,
   ValidationError,
   TimeoutError,
