@@ -688,10 +688,20 @@ export interface StabilityTool {
   /** Associated model ID */
   model_id: string;
   /**
-   * Legacy relative weight (1–3), **not** a price and not a currency amount.
-   * The tools are billed in USD from the prepaid wallet like every other
-   * endpoint; this number cannot be converted into one. Read `GET /v1/pricing`
-   * for the tool's rate, or `cost_usd` on the run response for what you paid.
+   * What one image costs, in USD, read from the same rate table the charge uses.
+   * Ranges from $0.03 (fast upscale) to $0.60 (creative upscale), so the tool you
+   * pick matters more here than on most endpoints.
+   */
+  price_usd: number;
+  /** Always `"USD"`. */
+  currency: string;
+  /** Always `"per image"`. */
+  unit: string;
+  /**
+   * @deprecated Read {@link price_usd}. A legacy relative weight (1–3), **not** a
+   * price and not a currency amount — and not proportional to the real prices
+   * either, so no conversion factor recovers one. The tools are billed in USD from
+   * the prepaid wallet like every other endpoint.
    */
   credits: number;
   /** Whether the tool requires a mask input */

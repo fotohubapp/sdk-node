@@ -989,12 +989,12 @@ export class FotoHub {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
-   * List all available Stability AI tools and what each one requires.
+   * List all available Stability AI tools, their USD price, and what each requires.
    *
-   * Each descriptor carries a legacy `credits` weight, not a price: the tools are
-   * charged in USD from the prepaid wallet like everything else. Read
-   * `GET /v1/pricing` for the amount a tool actually costs, or the `cost_usd` on
-   * the response after you run one.
+   * `price_usd` is per image and comes from the same rate table the charge reads,
+   * so it cannot drift from what you are billed. The spread is wide — $0.03 for a
+   * fast upscale against $0.60 for a creative one — so read it before you pick a
+   * tool. The `credits` field is a deprecated legacy weight, not a price.
    *
    * @returns The tool descriptors
    *
@@ -1007,7 +1007,10 @@ export class FotoHub {
    *     tool.requires_prompt && "prompt",
    *     tool.requires_reference && "reference image",
    *   ].filter(Boolean);
-   *   console.log(`${tool.id}: needs ${needs.join(", ") || "image only"}`);
+   *   console.log(
+   *     `${tool.id}: $${tool.price_usd.toFixed(2)}/image, ` +
+   *       `needs ${needs.join(", ") || "image only"}`,
+   *   );
    * }
    * ```
    */
