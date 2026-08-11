@@ -1011,24 +1011,55 @@ export interface ThreeDGenerationOptions {
 }
 
 export interface ThreeDResult {
-  /** Generation ID */
-  id: string;
-  /** Download URL for the 3D model file */
+  /**
+   * Identifier of the generated asset — pass this to `get3DStatus()` to re-sign
+   * the download link. This is the field the API actually returns; `id` never was.
+   */
+  file_id?: string;
+  /**
+   * Download URL for the 3D model file. **Signed, and expires after 2 hours** —
+   * persist the bytes, or call `get3DStatus(file_id)` for a fresh link.
+   */
   url: string;
   /** Output format */
-  format: string;
+  format?: string;
   /** Model used */
   model: string;
-  /** Current status */
-  status: "queued" | "processing" | "completed" | "failed";
-  /** Thumbnail preview URL */
-  thumbnail_url?: string;
-  /** Polygon count */
-  poly_count?: number;
-  /** File size in bytes */
-  file_size?: number;
+  /** Stored file name */
+  name?: string;
+  /** Path inside the private storage bucket */
+  storage_path?: string;
+  /** Size and wall-clock duration of the generation */
+  stats?: {
+    file_size_bytes?: number;
+    duration_ms?: number;
+  };
+  /** What left the prepaid wallet for this generation, in USD */
+  cost_usd?: number;
+  /** Always `"USD"` — the API prices only in dollars */
+  currency?: string;
   /** Billing information */
   billing: BillingInfo;
+
+  // ─── Legacy ────────────────────────────────────────────────────────────────
+  // These were documented but never returned by `POST /v1/ai/generate/3d`. They
+  // stay declared (optional) so existing code keeps compiling, and stay
+  // `undefined` at runtime, which is what they always were.
+
+  /** @deprecated Not returned. Use `file_id`. */
+  id?: string;
+  /**
+   * @deprecated Not returned by the generate call — the generation is
+   * synchronous, so there is no intermediate state to observe. `get3DStatus()`
+   * reports `"completed"` for a stored asset.
+   */
+  status?: "queued" | "processing" | "completed" | "failed";
+  /** @deprecated Never returned; no thumbnail is produced. */
+  thumbnail_url?: string;
+  /** @deprecated Never returned; the polygon count is not measured. */
+  poly_count?: number;
+  /** @deprecated Use `stats.file_size_bytes`. */
+  file_size?: number;
 }
 
 export interface ThreeDModelInfo {
@@ -1038,8 +1069,17 @@ export interface ThreeDModelInfo {
   name: string;
   /** Description */
   description: string;
-  /** Credit cost per generation */
-  credits: number;
+  /** Price per generation in USD, from the same rate table the charge uses */
+  price_usd?: number;
+  /** Always `"USD"` */
+  currency?: string;
+  /** What the price is per — `"per request"` for every 3D model */
+  unit?: string;
+  /**
+   * @deprecated Not returned. The API is prepaid USD and has no credits; read
+   * `price_usd` instead.
+   */
+  credits?: number;
   /** Approximate generation time */
   speed: string;
   /** Supported modes */

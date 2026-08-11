@@ -1677,8 +1677,15 @@ export class FotoHub {
   /**
    * Generate a 3D model from an image or text prompt.
    *
+   * **Synchronous** — this resolves with the finished model. There is no job
+   * queue and nothing to poll. `fh-pro-3d` can take ~60s, so the timeout below
+   * is deliberately generous.
+   *
+   * Charged in USD from the prepaid wallet before the GPU runs; a `402` means
+   * insufficient funds and nothing was taken. A failure on our side is refunded.
+   *
    * @param options - 3D generation parameters
-   * @returns 3D result with download URL and billing info
+   * @returns 3D result with a signed download URL (2h) and the USD charge
    *
    * @example
    * ```typescript
@@ -1688,7 +1695,8 @@ export class FotoHub {
    *   image: base64EncodedImage,
    *   format: "glb",
    * });
-   * console.log(result.url); // GLB file URL
+   * console.log(result.url);       // GLB file URL, already complete
+   * console.log(result.cost_usd);  // what left the wallet
    * ```
    */
   async generate3D(options: Generate3DOptions): Promise<ThreeDResult> {
@@ -1713,17 +1721,21 @@ export class FotoHub {
   }
 
   /**
-   * Check the status of a 3D generation job.
+   * Fetch a stored 3D asset, with a freshly signed download URL.
    *
-   * @param jobId - The generation ID returned from `generate3D()`
-   * @returns Current status and result if completed
+   * Not a status check: `generate3D()` is synchronous, so the model is already
+   * finished when it resolves. What this is for is the expiry — the `url` from
+   * the generate call dies after 2 hours, and this mints a new one. Free.
+   *
+   * Throws `NotFoundError` if no asset with that id belongs to your account.
+   *
+   * @param jobId - The `file_id` returned from `generate3D()`
+   * @returns The stored asset with a fresh `url`
    *
    * @example
    * ```typescript
-   * const status = await client.get3DStatus("gen_abc123");
-   * if (status.status === "completed") {
-   *   console.log(status.url);
-   * }
+   * const asset = await client.get3DStatus(result.file_id!);
+   * console.log(asset.url); // valid for another 2 hours
    * ```
    */
   async get3DStatus(jobId: string): Promise<ThreeDResult> {
@@ -1735,19 +1747,23 @@ export class FotoHub {
   }
 
   /**
-   * Wait for a 3D generation job to complete, polling at intervals.
+   * @deprecated There is nothing to wait for. `generate3D()` is synchronous and
+   * resolves with the finished model, so this returns on its first poll — the
+   * stored asset always reports `"completed"`. Kept so existing code keeps
+   * working; new code should use the `generate3D()` result directly, or
+   * `get3DStatus(file_id)` when it needs a fresh signed URL.
    *
-   * @param jobId - The generation ID returned from `generate3D()`
-   * @param options - Polling configuration
-   * @returns Completed 3D result with download URL
+   * The previous example passed `gen.id`, which the API never returns. That call
+   * requested `/v1/ai/generate/3d/undefined` and always failed.
+   *
+   * @param jobId - The `file_id` returned from `generate3D()`
+   * @param options - Polling configuration (effectively unused now)
+   * @returns The stored 3D result with a fresh download URL
    *
    * @example
    * ```typescript
    * const gen = await client.generate3D({ mode: "text-to-3d", model: "fh-text-3d", prompt: "a castle" });
-   * const completed = await client.waitFor3D(gen.id, {
-   *   onProgress: (r) => console.log(`Status: ${r.status}`),
-   * });
-   * console.log(completed.url);
+   * console.log(gen.url); // already done -- no wait needed
    * ```
    */
   async waitFor3D(jobId: string, options: ThreeDPollOptions = {}): Promise<ThreeDResult> {
@@ -1791,7 +1807,7 @@ export class FotoHub {
    * ```typescript
    * const models = await client.list3DModels();
    * for (const m of models) {
-   *   console.log(`${m.name}: ${m.credits} credits (${m.speed})`);
+   *   console.log(`${m.name}: $${m.price_usd} (${m.speed})`);
    * }
    * ```
    */

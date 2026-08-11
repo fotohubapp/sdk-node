@@ -822,9 +822,9 @@ positional arguments. Only four methods work without an API key.
 | `generateSfx(options)` | Generate a sound effect | Yes |
 | `generateSpeech(options)` | Text-to-speech synthesis | Yes |
 | `transcribe(options)` | Transcribe audio to text | Yes |
-| `generate3D(options)` | Submit a 3D generation job | Yes |
-| `get3DStatus(jobId)` | Poll a 3D job | Yes |
-| `waitFor3D(jobId, opts?)` | Wait for a 3D job to finish | Yes |
+| `generate3D(options)` | Generate a 3D mesh (synchronous — returns the model) | Yes |
+| `get3DStatus(fileId)` | Re-sign the download URL of a stored mesh (free) | Yes |
+| `waitFor3D(jobId, opts?)` | Deprecated — 3D is synchronous, nothing to wait for | Yes |
 | `list3DModels()` | List available 3D models | Yes |
 | `tryOn(options)` | Submit a virtual try-on (one garment, or top + bottom) | Yes |
 | `getTryOnStatus(jobId)` | Poll a try-on job | Yes |
