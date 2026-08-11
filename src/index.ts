@@ -89,6 +89,7 @@ export type {
   PollOptions,
   GenerateSeedanceOptions,
   SeedanceResult,
+  SeedanceBilling,
   SeedanceReference,
   RegisterVideoAssetResult,
 } from "./types.js";
@@ -193,10 +194,13 @@ export type {
 export type {
   TierCatalog,
   TierCatalogEntry,
+  TierAccess,
   TierInfo,
   TierLimits,
   TierUsage,
+  TierWallet,
   TierComparison,
+  TierComparisonRow,
   WalletInfo,
   EnterpriseApplication,
 } from "./types.js";

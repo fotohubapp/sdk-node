@@ -29,7 +29,7 @@ export interface GenerateImageOptions {
   /**
    * Whole number of images, 1-8. Charged per image the provider actually
    * delivers: each caps the count at its own maximum and the difference is
-   * refunded automatically, so `credits_used` always matches `images.length`.
+   * refunded automatically, so `cost_usd` always matches `images.length`.
    */
   num_images?: number;
   /**
@@ -59,8 +59,10 @@ export interface GenerateImageOptions {
 export interface ImageResult {
   /** Model used for generation */
   model: string;
-  /** Credits consumed */
-  credits_used: number;
+  /** USD charged for this generation. Same figure as `billing.cost_usd`. */
+  cost_usd?: number;
+  /** @deprecated Not sent by the prepaid API. Use {@link cost_usd}. */
+  credits_used?: number;
   /** Billing information */
   billing: BillingInfo;
   /** Generated image URLs */
@@ -103,7 +105,10 @@ export interface IdaQJobSubmitResult {
   model: "ida-q-image";
   job_id: string;
   status: "queued";
-  credits_used: number;
+  /** USD charged at submit. Refunded in full if the job fails. */
+  cost_usd?: number;
+  /** @deprecated Not sent by the prepaid API. Use {@link cost_usd}. */
+  credits_used?: number;
   billing: BillingInfo;
   estimated_seconds: number;
   poll_url: string;
@@ -137,8 +142,12 @@ export interface EditImageOptions {
 export interface EditResult {
   /** Editing mode used */
   mode: string;
-  /** Credits consumed */
-  credits_used: number;
+  /** USD charged for this edit. Same figure as `billing.cost_usd`. */
+  cost_usd?: number;
+  /** @deprecated Not sent by the prepaid API. Use {@link cost_usd}. */
+  credits_used?: number;
+  /** Billing information */
+  billing?: BillingInfo;
   /** Processed image URLs */
   images: string[];
 }
@@ -190,8 +199,12 @@ export interface GenerateVideoOptions {
 export interface VideoResult {
   /** Model used */
   model: string;
-  /** Credits consumed */
-  credits_used: number;
+  /** USD charged at submit. Refunded in full when the job fails. */
+  cost_usd?: number;
+  /** @deprecated Not sent by the prepaid API. Use {@link cost_usd}. */
+  credits_used?: number;
+  /** Billing information, on the responses that carry a charge. */
+  billing?: BillingInfo;
   /** Video output URL (available when completed) */
   video_url?: string;
   /** Job ID for async polling */
@@ -205,9 +218,9 @@ export interface VideoResult {
   /** Why the generation failed. Only present when `status` is "failed". */
   error?: string;
   /**
-   * Whether the credits for a failed generation were given back. `true` on the
-   * poll that performed the reversal, `false` on every later poll of the same
-   * job — meaning "already refunded", not "not refunded".
+   * Whether the wallet charge for a failed generation was given back. `true` on
+   * the poll that performed the reversal, `false` on every later poll of the
+   * same job — meaning "already refunded", not "not refunded".
    */
   refunded?: boolean;
   /** Progress percentage, 0-100, while the job runs. */
@@ -260,8 +273,9 @@ export interface GenerateSeedanceOptions {
   reference_images?: SeedanceReference[];
   /**
    * Up to 10 on 2.5 (3 on 2.0). Attaching one switches the request to
-   * reference / editing / extension mode and raises the rate to 17.6 credits/s
-   * at 720p, because the source frames bill as input.
+   * reference / editing / extension mode, which can also rewrite the duration
+   * and aspect ratio you asked for — read `duration` and `resolution` back off
+   * the response, since those are what the per-second charge is applied to.
    */
   reference_videos?: SeedanceReference[];
   /** Up to 10 on 2.5 (3 on 2.0). Requires at least one image or video reference. */
@@ -306,11 +320,38 @@ export interface SeedanceResult extends VideoResult {
   poll_url?: string;
   /** Rough wall-clock estimate in seconds, returned on submit */
   estimated_seconds?: number;
-  /** Charge detail — `breakdown` carries credits_per_second, duration, resolution */
-  billing?: Record<string, unknown>;
+  /**
+   * Charge detail, returned on submit. `breakdown` shows how the USD figure was
+   * reached — the per-second rate, the seconds actually billed, and the total.
+   * It used to be documented as carrying `credits_per_second`; nothing on this
+   * response is denominated in credits.
+   */
+  billing?: SeedanceBilling;
   created_at?: string;
   completed_at?: string;
   error_message?: string;
+}
+
+/**
+ * `billing` on a Seedance submit: the standard charge block plus a `breakdown`
+ * showing the arithmetic behind it.
+ */
+export interface SeedanceBilling extends BillingInfo {
+  breakdown?: {
+    currency: 'USD';
+    /** Provider rate per second of output. */
+    rate_usd_per_second?: number;
+    /** Seconds actually billed, which may differ from what you requested. */
+    duration_seconds?: number;
+    /** Per-image rate, on the flat-priced models. */
+    rate_usd_per_image?: number;
+    quantity?: number;
+    /** Total charged — the same figure as `cost_usd`. */
+    amount_usd: number;
+    /** `per_second` or `per_operation`. */
+    pricing_type?: string;
+    resolution?: string;
+  };
 }
 
 export interface RegisterVideoAssetResult {
@@ -346,8 +387,12 @@ export interface GenerateMusicOptions {
 export interface MusicResult {
   /** Model used */
   model: string;
-  /** Credits consumed */
-  credits_used: number;
+  /** USD charged. Audio is billed per minute, so this scales with `duration`. */
+  cost_usd?: number;
+  /** @deprecated Not sent by the prepaid API. Use {@link cost_usd}. */
+  credits_used?: number;
+  /** Billing information */
+  billing?: BillingInfo;
   /** Audio file URL */
   audio_url: string;
   /** Duration in seconds */
@@ -364,8 +409,12 @@ export interface GenerateSfxOptions {
 }
 
 export interface SfxResult {
-  /** Credits consumed */
-  credits_used: number;
+  /** USD charged for this sound effect. */
+  cost_usd?: number;
+  /** @deprecated Not sent by the prepaid API. Use {@link cost_usd}. */
+  credits_used?: number;
+  /** Billing information */
+  billing?: BillingInfo;
   /** Audio file URL */
   audio_url: string;
 }
@@ -388,8 +437,12 @@ export interface GenerateSpeechOptions {
 }
 
 export interface SpeechResult {
-  /** Credits consumed */
-  credits_used: number;
+  /** USD charged. TTS is billed per 1K characters of input text. */
+  cost_usd?: number;
+  /** @deprecated Not sent by the prepaid API. Use {@link cost_usd}. */
+  credits_used?: number;
+  /** Billing information */
+  billing?: BillingInfo;
   /** Audio file URL */
   audio_url: string;
 }
@@ -404,8 +457,12 @@ export interface TranscribeOptions {
 }
 
 export interface TranscriptionResult {
-  /** Credits consumed */
-  credits_used: number;
+  /** USD charged. Transcription is billed per minute of audio. */
+  cost_usd?: number;
+  /** @deprecated Not sent by the prepaid API. Use {@link cost_usd}. */
+  credits_used?: number;
+  /** Billing information */
+  billing?: BillingInfo;
   /** Transcribed text */
   text: string;
   /** Detected or confirmed language */
@@ -468,7 +525,12 @@ export interface ChatResult {
   id: string;
   /** Model used */
   model: string;
-  /** Credits consumed */
+  /**
+   * USD charged. Input and output tokens are priced separately — every provider
+   * charges output at 4-5x input — so this tracks `usage`, not the request count.
+   */
+  cost_usd?: number;
+  /** @deprecated Not sent by the prepaid API. Use {@link cost_usd}. */
   credits_used?: number;
   /** Completion choices */
   choices: ChatChoice[];
@@ -579,8 +641,10 @@ export type AnalysisLikelihood =
   | "VERY_LIKELY";
 
 export interface AnalysisResult {
-  /** Credits consumed -- a flat 1 regardless of how many features were requested */
-  credits_used: number;
+  /** USD charged — one flat price regardless of how many features were requested. */
+  cost_usd?: number;
+  /** @deprecated Not sent by the prepaid API. Use {@link cost_usd}. */
+  credits_used?: number;
   billing?: BillingInfo;
   image_url?: string;
   /** Which features actually ran */
@@ -623,7 +687,12 @@ export interface StabilityTool {
   id: string;
   /** Associated model ID */
   model_id: string;
-  /** Credit cost per use */
+  /**
+   * Legacy relative weight (1–3), **not** a price and not a currency amount.
+   * The tools are billed in USD from the prepaid wallet like every other
+   * endpoint; this number cannot be converted into one. Read `GET /v1/pricing`
+   * for the tool's rate, or `cost_usd` on the run response for what you paid.
+   */
   credits: number;
   /** Whether the tool requires a mask input */
   requires_mask: boolean;
@@ -678,23 +747,62 @@ export interface StabilityResult {
   tool: string;
   /** Seed used for generation */
   seed?: number;
-  /** Credits consumed */
-  credits_used: number;
+  /** USD charged for this tool run. */
+  cost_usd?: number;
+  /** @deprecated Not sent by the prepaid API. Use {@link cost_usd}. */
+  credits_used?: number;
+  /** Billing information */
+  billing?: BillingInfo;
 }
 
 // ─── Billing ─────────────────────────────────────────────────────────────────
 
+/**
+ * What a billed call charged, and what the wallet has left.
+ *
+ * The API is prepaid in USD and no longer settles anything in credits, so
+ * `cost_usd` is the charge. It is the same figure as the top-level `cost_usd`
+ * on the response — read either.
+ */
 export interface BillingInfo {
+  /** USD charged for this operation, to six decimal places. */
+  cost_usd: number;
   /**
-   * Credits used for this operation. Fractional on token-billed endpoints:
-   * a short `chat()` completion costs ~0.02 credits, not a whole one.
+   * Wallet balance AFTER this charge. Watch it to decide when to top up before
+   * the next request is refused with a 402.
    */
-  credits_used: number;
-  /** Remaining credits after operation */
+  balance_usd?: number | null;
+  /** Always `"USD"`. There is no other settlement currency on the API. */
+  currency?: 'USD';
+  /** Always `"wallet"` — the prepaid balance is the only thing that can pay. */
+  method?: 'wallet';
+  /** Always `"prepaid"`. */
+  model?: 'prepaid';
+  /** Per-leg cost breakdown, on the endpoints that return one (chat tokens). */
+  legs?: Array<Record<string, unknown>>;
+  /**
+   * Set only when a token charge exceeded what the wallet could cover. The work
+   * was already done and cannot be undone, so the shortfall is reported instead
+   * of hidden; the next request is refused at the funds gate.
+   */
+  uncollected_usd?: number;
+  /** Human-readable companion to `uncollected_usd`. */
+  warning?: string;
+  /**
+   * @deprecated The API is prepaid in USD and stopped sending a credit figure,
+   * so this is absent on every current response. Reading it as `0` would report
+   * a real charge as a free generation — use {@link cost_usd}. Removed in the
+   * next major version.
+   */
+  credits_used?: number;
+  /**
+   * @deprecated Never sent by the prepaid API. Use {@link balance_usd}.
+   */
   credits_remaining?: number;
-  /** Which balance paid: included credits, or the USD wallet once they run out */
-  method?: 'credits' | 'wallet';
-  /** What actually left the wallet. `0` while `method` is `credits`. */
+  /**
+   * @deprecated Internal alias for {@link cost_usd} on some endpoints. Prefer
+   * `cost_usd`, which every billed response carries.
+   */
   usd_charged?: number;
   /**
    * How the charge was derived. `tokens` on `chat()` — the real input/output
@@ -704,45 +812,114 @@ export interface BillingInfo {
   basis?: 'tokens' | 'flat_fallback';
 }
 
+/**
+ * `GET /v1/billing/balance` — the prepaid wallet and this month's spend.
+ *
+ * The `credits` and `tier` fields declared here before were not in the response:
+ * `credits` had been dropped (it reported the fotohub.app subscription counter,
+ * telling API developers they had hundreds of credits available while their
+ * spendable balance was $0) and `tier` was never sent — call
+ * {@link FotoHub.getCurrentTier} for that.
+ */
 export interface BillingBalance {
-  /** Current subscription tier */
-  tier: string;
-  /** Credit balance details */
-  credits: Record<string, unknown>;
-  /** Wallet/payment details */
-  wallet: Record<string, unknown>;
-  /** Overage configuration */
-  overage: Record<string, unknown>;
+  wallet: {
+    /** Spendable now, in USD. At `0` every billed call returns HTTP 402. */
+    balance_usd: number;
+    /** Reserved by in-flight jobs. */
+    pending_usd: number;
+    /** Total ever credited by top-ups. */
+    total_topped_up_usd: number;
+    currency: 'USD';
+  };
+  spend: {
+    /** Charged this calendar month, in USD. Scoped to the key's project if it has one. */
+    this_month_usd: number;
+    /** Self-imposed monthly ceiling, or `null` when none is set. */
+    monthly_limit_usd: number | null;
+    /** `monthly_limit_usd - this_month_usd`, or `null` when no limit is set. */
+    remaining_usd?: number | null;
+    currency: 'USD';
+  };
+  /** Always `"prepaid_wallet_usd"`. Stated so you need not infer it from absent keys. */
+  billing_model: 'prepaid_wallet_usd';
+  /** The active API plan row, or `null`. A plan sets rate limits; it does not fund calls. */
+  api_subscription?: Record<string, unknown> | null;
+  /**
+   * @deprecated Same numbers as {@link spend}, under the old name, kept one
+   * release. "Overage" is the wrong word for a prepaid account: there is nothing
+   * to exceed — a call beyond the balance is declined, not billed.
+   */
+  overage?: {
+    spent_this_month: number;
+    hard_limit_usd: number | null;
+    remaining: number | null;
+    deprecated: string;
+  };
 }
 
 export interface PricingCatalog {
   /** Currency code */
   currency: string;
-  /** Pricing per model/operation */
+  /**
+   * What the prices in `pricing` mean. States that they are the provider's own
+   * rate with no platform fee added, billed from the prepaid wallet.
+   */
+  margin_info?: string;
+  /**
+   * Pricing per model/operation. Converted from the legacy catalog at the live
+   * NBP rate, so a figure here can drift against the amount actually charged.
+   * `GET /v1/pricing` publishes the rate the biller uses, per leg with its unit —
+   * prefer it for anything you display or budget against.
+   */
   pricing: Record<string, unknown>;
-  /** Credit cost conversions */
-  credit_costs: Record<string, unknown>;
   /** Available API plans */
   api_plans: Record<string, unknown>;
+  /** Wallet top-up packages */
+  topup_packages?: Record<string, unknown>;
+  /** Storage packages */
+  storage_packages?: Record<string, unknown>;
+  /**
+   * @deprecated Removed from the response. It published a per-operation credit
+   * price for a product that cannot be paid for in credits — an API call is
+   * charged from the prepaid USD wallet, so a key holding web-app credits and
+   * $0 gets a 402.
+   */
+  credit_costs?: Record<string, unknown>;
 }
 
+/**
+ * One entry from `GET /v1/billing/plans`.
+ *
+ * A plan buys rate limits and model access. It does **not** fund API calls:
+ * every call is charged to the prepaid USD wallet, so a subscriber with a $0
+ * balance still gets HTTP 402. The `credits_monthly` grant is spendable in the
+ * fotohub.app web app only.
+ */
 export interface ApiPlan {
   /** Plan identifier (e.g. "api-developer") */
   slug: string;
   /** Plan display name */
   name: string;
   /**
-   * Monthly subscription price in PLN. API tier subscriptions are still
-   * billed in PLN; only the PAYG wallet and per-request overage moved to USD
-   * on 2026-08-05.
+   * Monthly subscription price in PLN, or `null` on the enterprise plan (priced
+   * per contract). API plans kept their PLN prices; only wallet spending is USD.
    */
-  price_pln: number;
-  /** Included credits per month */
-  credits_monthly: number;
+  price_pln: number | null;
+  /**
+   * Monthly credit grant, or `null` for "uncapped". Spendable on fotohub.app,
+   * never on the API — see the note on this interface.
+   */
+  credits_monthly: number | null;
   /** Requests-per-minute rate limit */
   rate_limit_rpm: number;
-  /** Plan features */
+  /** Plan features, as display strings */
   features: string[];
+  /** Model grant: an explicit id list, or `"all_standard"` / `"all"` / `"all_beta"` / `"all_custom"`. */
+  models_allowed?: string | string[];
+  /** Included storage in GB, or `null` for uncapped. */
+  storage_gb?: number | null;
+  /** Largest accepted upload, in MB. */
+  max_upload_mb?: number;
   /** @deprecated Not returned by the API. Use `slug`. */
   id?: string;
   /** @deprecated Not returned by the API. Use `price_pln`. */
@@ -751,14 +928,33 @@ export interface ApiPlan {
   credits_included?: number;
 }
 
+/**
+ * What `GET /v1/billing/credits` returns now that the API is prepaid.
+ *
+ * The endpoint is deprecated and answers with the wallet: the API has no credits
+ * at all, and credits in the fotohub.app web app cannot pay for API usage. It
+ * kept returning 200 rather than 404 so an existing integration polling it learns
+ * where its money actually is. `total` / `used` / `remaining` were declared here
+ * and are not in the response — reading them gives `undefined`.
+ */
 export interface CreditsInfo {
-  /** Total available credits */
-  total: number;
-  /** Credits used this period */
-  used: number;
-  /** Credits remaining */
-  remaining: number;
-  /** Period reset date */
+  /** Always `true`. Use {@link FotoHub.getBalance} instead. */
+  deprecated: boolean;
+  /** Explains that the API is prepaid in USD and where to look instead. */
+  message: string;
+  /** Always `"prepaid_wallet_usd"`. */
+  billing_model: string;
+  /** The prepaid wallet — the only thing that can pay for an API call. */
+  wallet: Record<string, unknown>;
+  /** Spend totals for the current period. */
+  spend?: Record<string, unknown>;
+  /** @deprecated Not in the response. The API has no credit balance. */
+  total?: number;
+  /** @deprecated Not in the response. The API has no credit balance. */
+  used?: number;
+  /** @deprecated Not in the response. Read `wallet.balance_usd`. */
+  remaining?: number;
+  /** @deprecated Not in the response. A prepaid wallet does not reset. */
   resets_at?: string;
 }
 
@@ -816,30 +1012,53 @@ export interface TransactionOptions {
   type?: string;
 }
 
+/**
+ * `GET /v1/billing/transactions` — one page of the wallet ledger.
+ *
+ * The rows come back under `data`, not `transactions`, and the response carries
+ * no total: page until you get fewer rows than `page_size`. Both fields declared
+ * here before (`transactions`, `total`) read as `undefined`.
+ */
 export interface TransactionPage {
-  /** Transaction records */
-  transactions: Transaction[];
-  /** Total count */
-  total: number;
-  /** Current page */
+  /** Transaction records for this page, newest first. */
+  data: Transaction[];
+  /** Echo of the requested page (1-based). */
   page: number;
-  /** Items per page */
+  /** Echo of the requested page size. A short page is the last page. */
   page_size: number;
+  /** @deprecated Not in the response. Read {@link data}. */
+  transactions?: Transaction[];
+  /** @deprecated Not in the response — the API does not count matching rows. */
+  total?: number;
 }
 
 export interface Transaction {
   /** Transaction ID */
   id: string;
-  /** Type (credit, debit, topup, subscription) */
+  /** Type (charge, refund, topup, subscription, …) */
   type: string;
-  /** Amount (positive or negative) */
-  amount: number;
+  /**
+   * Signed USD amount: negative for a charge, positive for a top-up. `null` on
+   * rows written before the 2026-08-05 USD cutover, which carry `amount_pln`.
+   */
+  amount_usd: number | null;
+  /**
+   * Signed PLN amount, on historical rows only. Present because the ledger
+   * predates the USD wallet; do not add it to a USD figure.
+   */
+  amount_pln?: number | null;
   /** Description */
   description: string;
   /** Timestamp */
   created_at: string;
   /** Related model/operation */
   metadata?: Record<string, unknown>;
+  /**
+   * @deprecated Not a field the API sends — it was never currency-tagged, which
+   * is exactly the ambiguity that made a PLN row readable as USD. Use
+   * {@link amount_usd}.
+   */
+  amount?: number;
 }
 
 export interface CostOperation {
@@ -854,44 +1073,92 @@ export interface CostOperation {
 }
 
 export interface CostEstimate {
-  /** Total credits required */
-  total_credits: number;
-  /** Total cost in USD */
+  /** Total cost in USD, covering the priced operations only — see {@link priced}. */
   total_usd: number;
+  /** What the providers charge us for the same batch. Equal to `total_usd` at margin 1.0. */
+  provider_cost_usd?: number;
+  /** Margin multiplier applied to the provider cost. `1` while prices are 1:1. */
+  margin?: number;
   /** Currency (always "USD") */
   currency: string;
+  /** Always `"prepaid_wallet_usd"`. */
+  billing_model?: string;
+  /** Your wallet balance at the time of the estimate. */
+  balance_usd?: number;
+  /**
+   * Whether the wallet covers this batch. Decided server-side, so you never have
+   * to compare two numbers you may have parsed as 0. With an unpriced leg in the
+   * batch this weakens to "the wallet holds money" — read {@link priced} to know
+   * which answer you got.
+   */
+  sufficient?: boolean;
+  /**
+   * `false` when any operation had no published rate. That leg is excluded from
+   * `total_usd` rather than counted as free, so the total is then incomplete.
+   */
+  priced?: boolean;
   /** Per-operation breakdown */
   breakdown: CostBreakdownItem[];
+  /**
+   * @deprecated Always `null`. There is no credit unit in the API — a `0` here
+   * would read as "this batch is free". Read {@link total_usd}.
+   */
+  total_credits?: null;
 }
 
 export interface CostBreakdownItem {
-  /** Operation type */
+  /** Operation type, e.g. `"generate_image"`. */
   type: string;
   /** Model used */
   model?: string;
-  /** Duration in seconds (video/music operations) */
-  duration?: number;
-  /** Credits for this item */
-  credits: number;
-  /** USD cost for this item */
-  price_usd: number;
+  /** How many units of the operation were quoted. */
+  count?: number;
+  /** Whether a rate was found. `false` legs carry a {@link reason} instead of an amount. */
+  priced: boolean;
+  /** The meter this model is billed by, taken from the rate itself, e.g. `"per_second"`. */
+  unit?: string | null;
+  /** USD for this item, or `null` when `priced` is false. */
+  amount_usd: number | null;
+  /** Provider cost for this item, or `null` when `priced` is false. */
+  provider_cost_usd: number | null;
+  /** Whether the rate was checked against the provider's published price. */
+  pricing_verified?: boolean;
+  /** Per-leg lines (input/output tokens, image legs). */
+  breakdown?: Array<Record<string, unknown>>;
+  /** Why this leg could not be priced. Present only when `priced` is false. */
+  reason?: string;
+  /** Extra pricing context, when the quote carries one. */
+  note?: string;
+  /**
+   * @deprecated Never returned. Read {@link amount_usd}.
+   */
+  credits?: number;
+  /**
+   * @deprecated Never returned under this name. Read {@link amount_usd}.
+   */
+  price_usd?: number;
 }
 
+/**
+ * One Stripe payment record. The fields come straight from Stripe, so treat them
+ * as advisory: which are present depends on the payment method and its state.
+ */
 export interface Invoice {
   /** Invoice ID */
   id: string;
   /** Invoice number */
   number: string;
-  /** Amount */
+  /** Amount, in `currency`. */
   amount: number;
-  /** Currency */
+  /** Charge currency, which may be PLN even though the wallet is USD. */
   currency: string;
   /** Status */
-  status: "paid" | "pending" | "overdue";
+  status: string;
   /** Issue date */
   issued_at: string;
   /** PDF download URL */
   pdf_url?: string;
+  [key: string]: unknown;
 }
 
 // ─── Webhooks ────────────────────────────────────────────────────────────────
@@ -1072,8 +1339,13 @@ export interface ThreeDModelInfo {
   id: string;
   /** Display name */
   name: string;
-  /** Description */
-  description: string;
+  /**
+   * Not sent. `AVAILABLE_MODELS` in `generate_3d.py` carries no description, so
+   * this was typed as a guaranteed string that rendered as `undefined`; kept
+   * optional in case the catalog gains one. Use {@link speed} and
+   * {@link quality} to describe a model.
+   */
+  description?: string;
   /** Price per generation in USD, from the same rate table the charge uses */
   price_usd?: number;
   /** Always `"USD"` */
@@ -1130,8 +1402,9 @@ export interface TryOnOptions {
   garmentPhotoType?: GarmentPhotoType;
   /**
    * Two garments applied in one job — exactly one top and one bottom, no
-   * one-pieces. Costs 3 credits instead of 4 and forces numImages to 1. Order
-   * is irrelevant: the top is always applied first.
+   * one-pieces. It runs as two chained passes and delivers one image, so it is
+   * priced as its own operation at roughly twice a single try-on, and forces
+   * `numImages` to 1. Order is irrelevant: the top is always applied first.
    */
   garments?: TryOnGarment[];
   /** Renders to produce, 1-4. Ignored for an outfit */
@@ -1145,8 +1418,17 @@ export interface TryOnSubmitResult {
   job_id: string;
   status: string;
   category: string;
-  credits_used: number;
-  billing: { method: string; usd_charged: number; pln_charged: number };
+  /** USD charged at submit. Refunded in full if the job fails. */
+  cost_usd?: number;
+  /** @deprecated Not sent by the prepaid API. Use {@link cost_usd}. */
+  credits_used?: number;
+  /**
+   * The standard billing block. This was declared inline as
+   * `{ method, usd_charged, pln_charged }` — `pln_charged` never appears on a
+   * prepaid response, and the block is the same shape every other endpoint
+   * returns.
+   */
+  billing: BillingInfo;
   estimated_seconds: number;
   poll_url: string;
 }
@@ -1179,34 +1461,87 @@ export interface TryOnPollOptions {
 
 // ─── Tier Management ────────────────────────────────────────────────────────
 
+/**
+ * One tier as `GET /v1/tiers/catalog` publishes it.
+ *
+ * The limits are nested under `limits` and the model/feature grants under
+ * `access` — they are not flat fields on the entry. The previous declaration had
+ * them flat (`rpm`, `daily_quota`, `credits_monthly`, `features`) plus a `type`
+ * discriminator the endpoint never sends, so every one of those reads was
+ * `undefined` at runtime.
+ */
 export interface TierCatalogEntry {
-  /** Tier slug identifier */
+  /** Tier slug identifier, e.g. `payg-basic`, `sub-developer` */
   slug: string;
   /** Display name */
   name: string;
-  /** Tier type */
-  type: "payg" | "subscription";
+  /** One-line description of who the tier is for */
+  description: string;
   /**
-   * Monthly subscription price in PLN (0 for PAYG). API tier subscriptions
-   * are still billed in PLN; only the PAYG wallet and per-request overage
-   * moved to USD on 2026-08-05.
+   * Monthly fee, in `price_currency`. `0` on every pay-as-you-go tier, which
+   * has no monthly fee at all.
    */
   price_monthly: number;
-  /** Monthly credit allowance (-1 for unlimited) */
-  credits_monthly: number;
-  /** Requests per minute limit */
-  rpm: number;
-  /** Daily request quota */
-  daily_quota: number;
-  /** Features included */
-  features: string[];
-  /** Qualification requirements (for PAYG auto-resolution) */
-  requirements?: string;
+  /**
+   * Currency of `price_monthly`, per entry. Pay-as-you-go entries are `"USD"`
+   * (their wallet thresholds are USD); subscription entries are still `"PLN"`.
+   * Read this rather than the payload's top-level `currency`, which is the
+   * wallet currency and would render a 799 PLN plan as 799 USD.
+   */
+  price_currency: "USD" | "PLN";
+  /** Rate and capacity limits. */
+  limits: TierLimits;
+  /** Which model families and features the tier unlocks. */
+  access: TierAccess;
+  /**
+   * Wallet thresholds that auto-resolve a pay-as-you-go tier, in USD. Absent on
+   * subscription entries. This is an object, not the prose string the type
+   * previously declared.
+   */
+  requirements?: { min_wallet_balance: number; min_lifetime_spend: number };
 }
 
+export interface TierAccess {
+  /** Model family grant: `"basic"`, `"all_standard"`, `"all"`. */
+  models: string;
+  /** Feature slugs the tier may call, e.g. `"image_generation"`. */
+  features: string[];
+  /** Queue priority: `"normal"`, `"high"`, `"highest"`. */
+  priority: string;
+  /** Maximum live API keys, where the tier caps them. */
+  api_keys_max?: number;
+  /** Support channel, e.g. `"community"`, `"email"`. */
+  support?: string;
+  /** Uptime commitment, on tiers that carry one. */
+  sla?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * `GET /v1/tiers/catalog` — pay-as-you-go and subscription tiers in two
+ * separate arrays.
+ *
+ * There is no flat `tiers` array on this response; the field this type used to
+ * declare did not exist, so iterating it threw on `undefined`. For a single flat
+ * list use {@link FotoHub.compareTiers}.
+ */
 export interface TierCatalog {
-  /** Available tiers */
-  tiers: TierCatalogEntry[];
+  /** Tiers resolved automatically from your wallet balance and lifetime spend. */
+  payg: TierCatalogEntry[];
+  /** Paid monthly tiers. */
+  subscriptions: TierCatalogEntry[];
+  /** Wallet currency — always `"USD"`. Per-tier prices use `price_currency`. */
+  currency: "USD";
+  /** Currency of the pay-as-you-go wallet — always `"USD"`. */
+  payg_currency: "USD";
+  /** Billing cycle of the subscription tiers. */
+  billing_cycle: string;
+  /**
+   * How spending past your balance is handled: it is not. The API is prepaid,
+   * so a call that would exceed the balance is declined with HTTP 402 rather
+   * than billed as overage.
+   */
+  overage_policy: string;
 }
 
 export interface TierInfo {
@@ -1214,12 +1549,26 @@ export interface TierInfo {
   tier: string;
   /** Tier display name */
   name: string;
-  /** Tier type */
-  type: "payg" | "subscription";
+  /**
+   * Tier family. The response field is `category`, not `type` — `type` was never
+   * sent, so reading it always gave `undefined`.
+   */
+  category: "payg" | "subscription";
   /** Current rate limits */
   limits: TierLimits;
-  /** Current period usage */
+  /** Request counters for the current window */
   usage: TierUsage;
+  /**
+   * The prepaid balance that pays for every API call. A tier governs how fast
+   * you may spend; it never funds anything.
+   */
+  wallet: TierWallet;
+  /** Which model families and features the tier unlocks. */
+  access?: Record<string, unknown>;
+  /** The active subscription row, or `null` on a pay-as-you-go tier. */
+  subscription?: Record<string, unknown> | null;
+  /** Tiers you could move up to from here. */
+  upgrade_options?: Array<Record<string, unknown>>;
 }
 
 export interface TierLimits {
@@ -1227,37 +1576,137 @@ export interface TierLimits {
   rpm: number;
   /** Daily request quota */
   daily_quota: number;
-  /** Monthly credits (-1 for unlimited) */
-  credits_monthly: number;
   /** 4-hour burst allowance */
   burst_4h: number;
+  /** Jobs that may run at the same time */
+  concurrent_jobs?: number;
+  /** Largest accepted upload, in MB */
+  max_upload_mb?: number;
+  /** Included storage, in GB */
+  storage_gb?: number;
+  /** Tokens per minute */
+  tpm?: number;
+  /**
+   * @deprecated A tier grant, not API spending power: the API is prepaid in USD
+   * and credits cannot pay for a call. `0` on every pay-as-you-go tier. Read
+   * `wallet.balance_usd` to know what you can actually spend.
+   */
+  monthly_credits?: number;
 }
 
 export interface TierUsage {
-  /** Requests made in current minute */
-  rpm_used: number;
-  /** Requests made today */
-  daily_used: number;
-  /** Credits used this period */
-  credits_used: number;
+  /** Requests in the current 4-hour burst window */
+  used_4h: number;
+  /** Requests in the current billing period */
+  used_period: number;
+  /** Requests made today, against `limits.daily_quota` */
+  requests_today: number;
 }
 
-export interface TierComparison {
-  /** Current tier slug */
-  current: string;
-  /** All tiers with comparison data */
-  tiers: TierCatalogEntry[];
-}
-
-export interface WalletInfo {
-  /** Current balance in USD */
-  balance: number;
-  /** Currency code */
-  currency: string;
-  /** Lifetime spend */
+export interface TierWallet {
+  /** Spendable prepaid balance in USD. At `0` every billed call returns 402. */
+  balance_usd: number;
+  /** Held by in-flight jobs, not yet settled. */
+  pending_usd: number;
+  /** Total ever topped up. */
   lifetime_spend: number;
-  /** Auto-topup enabled */
-  auto_topup: boolean;
+}
+
+/** One row of the side-by-side table `GET /v1/tiers/compare` returns. */
+export interface TierComparisonRow {
+  slug: string;
+  name: string;
+  description: string;
+  /** `"payg"` or `"subscription"`. */
+  category: string;
+  /** Monthly fee in `TierComparison.currency`. `0` for pay-as-you-go. */
+  price_monthly: number | null;
+  /** Requests per minute. */
+  rpm: number;
+  /** Jobs that may run at the same time. */
+  concurrent_jobs: number;
+  /** Included storage, in GB. */
+  storage_gb: number;
+  /** Model family grant. */
+  models: string;
+  /** Queue priority. */
+  priority: string;
+  /** Uptime commitment, or `null`. */
+  sla?: string | null;
+  /** Support channel; defaults to `"community"`. */
+  support: string;
+  /**
+   * @deprecated A subscription grant spendable only on fotohub.app, never on the
+   * API — the API is prepaid in USD. `0` on every pay-as-you-go tier. Compare
+   * tiers on `rpm`/`concurrent_jobs`; fund calls from the wallet.
+   */
+  monthly_credits: number;
+}
+
+/**
+ * `GET /v1/tiers/compare` — every tier flattened for a comparison table.
+ *
+ * It does not tell you which tier is yours: the previously declared `current`
+ * field is not in the response (read `tier` from {@link FotoHub.getCurrentTier}),
+ * and the rows are this flat shape rather than {@link TierCatalogEntry}.
+ */
+export interface TierComparison {
+  tiers: TierComparisonRow[];
+  /**
+   * Currency of `price_monthly` across all rows. `"PLN"` — subscription tiers
+   * kept their PLN prices; only wallet spending is USD.
+   */
+  currency: string;
+}
+
+/**
+ * `GET /v1/tiers/wallet` — the full wallet: balance, month to date, and the
+ * recent ledger.
+ *
+ * Every field this type used to declare (`balance`, `currency`,
+ * `lifetime_spend`, `auto_topup`) was absent from the response — the amounts
+ * live under `balance`, which is an object.
+ */
+export interface WalletInfo {
+  balance: {
+    /** Spendable now, in USD. At `0` every billed call returns HTTP 402. */
+    available_usd: number;
+    /** Reserved by in-flight jobs, not yet settled. */
+    pending_usd: number;
+    /** Total ever credited by top-ups. */
+    total_earned_usd: number;
+    /** Total ever withdrawn. */
+    total_withdrawn_usd: number;
+  };
+  this_month: {
+    /** Charged so far this calendar month, in USD (positive). */
+    spent_usd: number;
+    /** Topped up so far this calendar month, in USD. */
+    topup_usd: number;
+    /** `topup_usd - spent_usd`. */
+    net: number;
+    /**
+     * `true` when the month has more ledger rows than the server sums, so the
+     * three figures above are a lower bound rather than the total. Storage
+     * settles hourly, so a busy account can reach it.
+     */
+    truncated: boolean;
+  };
+  /**
+   * Up to 20 newest ledger rows. `amount_usd` is `null` on rows written before
+   * the 2026-08-05 USD cutover, which carry `amount_pln` instead.
+   */
+  recent_transactions: Array<{
+    id: string;
+    created_at: string;
+    type: string;
+    amount_usd: number | null;
+    amount_pln?: number | null;
+    balance_after?: number | null;
+    description?: string | null;
+  }>;
+  /** Where to send the user to add funds. */
+  topup_url: string;
 }
 
 export interface EnterpriseApplication {
@@ -1350,7 +1799,12 @@ export interface GabrielClassifyOptions {
 export interface GabrielContext {
   /** User's subscription tier */
   user_tier?: string;
-  /** Current credit balance */
+  /**
+   * The end user's remaining **fotohub.app subscription credits**, if you are
+   * building on top of the web app. A hint you send, not a balance the API has:
+   * it only makes the suggestions warn about running low (`gabriel.py:327`). API
+   * usage is paid from the prepaid USD wallet and has no credits at all.
+   */
   credits_remaining?: number;
   /** Last 5 features the user used */
   recent_tools?: string[];
@@ -1416,7 +1870,7 @@ export interface GabrielSuggestion {
 export interface GabrielRecommendOptions {
   /** Current page path */
   page?: string;
-  /** User's credit balance */
+  /** The end user's fotohub.app credit balance — see {@link GabrielContext.credits_remaining}. */
   credits_remaining?: number;
   /** Whether user has a brand kit */
   has_brand?: boolean;

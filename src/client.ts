@@ -273,7 +273,7 @@ export class FotoHub {
    * Generate images from a text prompt.
    *
    * @param options - Image generation parameters
-   * @returns Generated image result with URLs, credits used, and metadata
+   * @returns Generated image result with URLs, the USD charged, and metadata
    *
    * @example
    * ```typescript
@@ -371,7 +371,9 @@ export class FotoHub {
       if (status.status === "completed") {
         return {
           model: "ida-q-image",
-          credits_used: submitResult.credits_used,
+          // The charge happens at submit, not at completion, so the poll never
+          // reports it — carry it across. `billing.cost_usd` is the same figure.
+          cost_usd: submitResult.cost_usd ?? submitResult.billing?.cost_usd,
           billing: submitResult.billing,
           images: status.images ?? [],
           metadata: status.metadata as ImageMetadata | undefined,
@@ -503,11 +505,15 @@ export class FotoHub {
       options.onProgress?.(result);
 
       // The poll route reports job state, not the charge — only the submit
-      // response carries `credits_used`. Returning the poll body alone left
-      // `credits_used` undefined on exactly the models that queue, so carry it
+      // response carries the price. Returning the poll body alone left
+      // `cost_usd` undefined on exactly the models that queue, so carry it
       // across rather than making callers hold on to the submit result.
       if (result.status === "completed") {
-        return { ...result, credits_used: result.credits_used ?? submitted.credits_used };
+        return {
+          ...result,
+          cost_usd:
+            result.cost_usd ?? submitted.cost_usd ?? submitted.billing?.cost_usd,
+        };
       }
       if (result.status === "failed" || result.status === "cancelled") {
         throw new JobFailedError(
@@ -528,17 +534,19 @@ export class FotoHub {
    *
    * `seedance-2-5` (the default) is the only model on the platform that produces
    * a 30-second clip in one request, and the only one that accepts a source
-   * video for editing or extension. Native audio is included in its price —
-   * 14.5 credits/s at 720p, 6.4 at 480p, the same with `generate_audio` on or
-   * off. It does **not** do 1080p or 4K; those return a 400. For higher
-   * resolution use `seedance-2-0-pro` (up to 4K, but capped at 15s).
+   * video for editing or extension. Video is billed per second of output, and
+   * 720p costs more per second than 480p; native audio is included, so
+   * `generate_audio` does not change the price. Call `GET /v1/pricing` for the
+   * current per-second rate — it is the provider's own, 1:1. It does **not** do
+   * 1080p or 4K; those return a 400. For higher resolution use
+   * `seedance-2-0-pro` (up to 4K, but capped at 15s).
    *
    * @param options - Seedance generation parameters
-   * @returns The finished job, including `video_url` and `credits_used`
+   * @returns The finished job, including `video_url` and `cost_usd`
    *
    * @example
    * ```typescript
-   * // A 30-second clip with audio — 435 credits at 720p
+   * // A 30-second clip with audio, billed per second at 720p
    * const video = await client.generateSeedance({
    *   prompt: "A chef plates a dish in a warm kitchen, steam rising, slow push-in",
    *   duration: 30,
@@ -634,7 +642,7 @@ export class FotoHub {
   /**
    * Register a hosted portrait as a reusable Seedance asset.
    *
-   * Free — no credits are charged. Pass the returned `uri` (or bare id) in
+   * Free — nothing is charged to the wallet. Pass the returned `uri` (or bare id) in
    * `asset_ids` on {@link generateSeedance} so the same face appears across
    * generations.
    *
@@ -800,9 +808,12 @@ export class FotoHub {
   /**
    * Create a chat completion (non-streaming). Compatible with OpenAI chat format.
    *
-   * Billed on the tokens actually used, so the charge is fractional and scales
-   * with the length of the answer: `credits_used` on a short reply is around
-   * 0.02, not 1. Read `billing.basis` to confirm it came from real token counts.
+   * Billed on the tokens actually used, so the charge scales with the length of
+   * the answer rather than being flat per request — a 120-in/350-out turn on
+   * `gemini-flash` costs $0.000911. Input and output are priced separately
+   * because every provider charges output several times input ($0.30 vs $2.50
+   * per 1M tokens here). Read `billing.basis` to confirm the charge came from
+   * real token counts.
    * Accepts only `gemini-flash`, `gemini-pro`, `gpt-4o` and `claude-sonnet` —
    * any other model id is rejected with 400 rather than silently substituted.
    *
@@ -819,7 +830,8 @@ export class FotoHub {
    *   max_tokens: 1000,
    * });
    * console.log(response.choices[0].message.content);
-   * console.log(response.billing?.credits_used);  // e.g. 0.0255
+   * console.log(response.billing?.cost_usd);      // e.g. 0.000911
+   * console.log(response.billing?.balance_usd);   // what is left afterwards
    * ```
    */
   async chat(options: ChatOptions): Promise<ChatResult> {
@@ -977,24 +989,41 @@ export class FotoHub {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
-   * List all available Stability AI tools with their capabilities and costs.
+   * List all available Stability AI tools and what each one requires.
    *
-   * @returns Array of Stability tool descriptors
+   * Each descriptor carries a legacy `credits` weight, not a price: the tools are
+   * charged in USD from the prepaid wallet like everything else. Read
+   * `GET /v1/pricing` for the amount a tool actually costs, or the `cost_usd` on
+   * the response after you run one.
+   *
+   * @returns The tool descriptors
    *
    * @example
    * ```typescript
    * const tools = await client.listStabilityTools();
    * for (const tool of tools) {
-   *   console.log(`${tool.id}: ${tool.credits} credits`);
+   *   const needs = [
+   *     tool.requires_mask && "mask",
+   *     tool.requires_prompt && "prompt",
+   *     tool.requires_reference && "reference image",
+   *   ].filter(Boolean);
+   *   console.log(`${tool.id}: needs ${needs.join(", ") || "image only"}`);
    * }
    * ```
    */
   async listStabilityTools(): Promise<StabilityTool[]> {
-    return await this.request<StabilityTool[]>({
+    // Wrapped as `{ "tools": [...] }` — unwrapped here, like `/v1/models`. The
+    // documented `for (const tool of tools)` threw before this.
+    const response = await this.request<
+      { tools?: StabilityTool[] } | StabilityTool[]
+    >({
       method: "GET",
       path: "/stability/tools",
       requiresAuth: true,
     });
+
+    if (Array.isArray(response)) return response;
+    return response?.tools ?? [];
   }
 
   /**
@@ -1262,33 +1291,50 @@ export class FotoHub {
   /**
    * Get available API subscription plans.
    *
-   * @returns Array of available plans with features and pricing
+   * These plans are still published with a PLN price and a monthly credit grant.
+   * Neither pays for API usage: every call is charged in USD from the prepaid
+   * wallet, so a key on a plan with a credit grant and a $0 balance still gets a
+   * 402. A plan governs rate limits and model access.
+   *
+   * @returns Array of available plans with features and rate limits
    *
    * @example
    * ```typescript
    * const plans = await client.getPlans();
    * for (const plan of plans) {
-   *   console.log(`${plan.name}: ${plan.price_pln} PLN/mo — ${plan.credits_monthly} credits`);
+   *   console.log(`${plan.name}: ${plan.rate_limit_rpm} req/min`);
    * }
    * ```
    */
   async getPlans(): Promise<ApiPlan[]> {
-    return await this.request<ApiPlan[]>({
+    // Wrapped as `{ "plans": [...] }`, like `/v1/models` — unwrapped here for
+    // the same reason: typing the wrapper as an array made the documented
+    // `for (const plan of plans)` throw "plans is not iterable".
+    const response = await this.request<{ plans?: ApiPlan[] } | ApiPlan[]>({
       method: "GET",
       path: "/v1/billing/plans",
       requiresAuth: true,
     });
+
+    if (Array.isArray(response)) return response;
+    return response?.plans ?? [];
   }
 
   /**
-   * Get current credit balance and usage for the billing period.
+   * @deprecated The API has no credits — it is prepaid in USD. This endpoint now
+   * answers with your wallet and a message saying so; `remaining` and `total` are
+   * not in the response. Use {@link getBalance}.
    *
-   * @returns Credits info with total, used, and remaining
+   * Kept because an integration already polling it deserves a self-explanatory
+   * 200 rather than a 404 it has to guess about.
+   *
+   * @returns The deprecation envelope, carrying the wallet and period spend
    *
    * @example
    * ```typescript
-   * const credits = await client.getCredits();
-   * console.log(`${credits.remaining} / ${credits.total} credits remaining`);
+   * const info = await client.getCredits();
+   * console.log(info.message);        // why this endpoint no longer has credits
+   * console.log(info.wallet);         // where the money actually is
    * ```
    */
   async getCredits(): Promise<CreditsInfo> {
@@ -1344,15 +1390,24 @@ export class FotoHub {
    * ```
    */
   async getTopupPackages(): Promise<TopupPackage[]> {
-    return await this.request<TopupPackage[]>({
+    // Wrapped as `{ "packages": [...] }` — unwrapped here, like `/v1/models`.
+    const response = await this.request<
+      { packages?: TopupPackage[] } | TopupPackage[]
+    >({
       method: "GET",
       path: "/v1/billing/topup/packages",
       requiresAuth: true,
     });
+
+    if (Array.isArray(response)) return response;
+    return response?.packages ?? [];
   }
 
   /**
-   * Purchase a credit top-up package. Returns a checkout URL for payment.
+   * Buy a wallet top-up package. Returns a checkout URL for payment.
+   *
+   * Payment credits `amount_usd` to the prepaid wallet, which is the only thing
+   * that pays for API calls.
    *
    * @param packageSlug - The slug of the package to purchase
    *   (e.g. "topup-50", "topup-100", "topup-250", "topup-500", "topup-1000", "topup-5000")
@@ -1374,16 +1429,25 @@ export class FotoHub {
   }
 
   /**
-   * Get paginated transaction history (credits, debits, top-ups, subscriptions).
+   * Get paginated wallet ledger history — charges, refunds, top-ups.
+   *
+   * The rows arrive under `data` and there is no total count, so page until a
+   * page comes back shorter than `pageSize`. Amounts are signed: negative is a
+   * charge. `amount_usd` is `null` on rows older than the 2026-08-05 USD
+   * cutover, which carry `amount_pln` instead.
    *
    * @param options - Pagination and filter options
-   * @returns Paginated transaction list
+   * @returns One page of ledger rows
    *
    * @example
    * ```typescript
    * const page = await client.getTransactions({ page: 1, pageSize: 50 });
-   * for (const tx of page.transactions) {
-   *   console.log(`${tx.type}: ${tx.amount} — ${tx.description}`);
+   * for (const tx of page.data) {
+   *   const amount =
+   *     tx.amount_usd !== null && tx.amount_usd !== undefined
+   *       ? `$${tx.amount_usd.toFixed(6)}`
+   *       : `${tx.amount_pln ?? 0} PLN (pre-USD)`;
+   *   console.log(`${tx.type}: ${amount} — ${tx.description}`);
    * }
    * ```
    */
@@ -1411,10 +1475,15 @@ export class FotoHub {
    * @example
    * ```typescript
    * const estimate = await client.estimateCost([
-   *   { type: "image", model: "seedream-5-0-260128", count: 4 },
-   *   { type: "video", model: "veo-2", duration: 10 },
+   *   { type: "generate_image", model: "seedream-5-0-260128", count: 4 },
+   *   { type: "generate_video", model: "seedance-2-0-mini", duration: 10 },
    * ]);
-   * console.log(`Total: ${estimate.total_credits} credits ($${estimate.total_usd})`);
+   * // `sufficient` comes from the server: it compares the total against your
+   * // wallet, so you never have to compare two numbers you may have parsed as 0.
+   * console.log(`$${estimate.total_usd} vs $${estimate.balance_usd} — ok: ${estimate.sufficient}`);
+   * // Check `priced`: a leg with no published rate is excluded from the total
+   * // rather than silently counted as free.
+   * if (!estimate.priced) console.warn("Estimate is partial", estimate.breakdown);
    * ```
    */
   async estimateCost(operations: CostOperation[]): Promise<CostEstimate> {
@@ -1427,9 +1496,18 @@ export class FotoHub {
   }
 
   /**
-   * Get all invoices for the account.
+   * Get the Stripe payment history for the account.
    *
-   * @returns Array of invoices with PDF download links
+   * This endpoint authenticates with a **browser session JWT**, not an `fh_` API
+   * key, so an SDK client configured with an API key gets a 401 here. Read the
+   * history in the console at `/console/billing` instead. The method is kept
+   * because a caller holding a Supabase JWT can use it.
+   *
+   * These are payment records for wallet top-ups and subscriptions — not
+   * per-generation charges, which are in the wallet ledger
+   * ({@link getTransactions}).
+   *
+   * @returns The payment records. Empty when Stripe cannot be reached.
    *
    * @example
    * ```typescript
@@ -1440,11 +1518,15 @@ export class FotoHub {
    * ```
    */
   async getInvoices(): Promise<Invoice[]> {
-    return await this.request<Invoice[]>({
+    // Wrapped as `{ "invoices": [...] }` — unwrapped here, like `/v1/models`.
+    const response = await this.request<{ invoices?: Invoice[] } | Invoice[]>({
       method: "GET",
       path: "/v1/billing/invoices",
       requiresAuth: true,
     });
+
+    if (Array.isArray(response)) return response;
+    return response?.invoices ?? [];
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1804,22 +1886,32 @@ export class FotoHub {
   /**
    * List available 3D generation models with their capabilities and pricing.
    *
-   * @returns Array of 3D models with costs and capabilities
+   * `price_usd` comes from the same rate table the charge does, so it cannot
+   * drift from what you are billed.
+   *
+   * @returns Array of 3D models with USD prices and capabilities
    *
    * @example
    * ```typescript
    * const models = await client.list3DModels();
    * for (const m of models) {
-   *   console.log(`${m.name}: $${m.price_usd} (${m.speed})`);
+   *   console.log(`${m.name}: $${m.price_usd} per request (${m.speed})`);
    * }
    * ```
    */
   async list3DModels(): Promise<ThreeDModelInfo[]> {
-    return await this.request<ThreeDModelInfo[]>({
+    // Wrapped as `{ "models": [...] }`, like `/v1/models` and
+    // `/v1/billing/plans` — unwrapped here so the documented iteration works.
+    const response = await this.request<
+      { models?: ThreeDModelInfo[] } | ThreeDModelInfo[]
+    >({
       method: "GET",
       path: "/v1/ai/generate/3d/models",
       requiresAuth: true,
     });
+
+    if (Array.isArray(response)) return response;
+    return response?.models ?? [];
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1843,7 +1935,7 @@ export class FotoHub {
    * console.log(done.images?.[0]);
    * ```
    *
-   * @example Outfit — a top and a bottom in one job, 3 credits
+   * @example Outfit — a top and a bottom in one job, one delivered image
    * ```ts
    * const job = await client.tryOn({
    *   personImageUrl: "https://example.com/person.jpg",
@@ -1946,11 +2038,23 @@ export class FotoHub {
    *
    * @returns Tier catalog with all PAYG and subscription tiers
    *
+   * A tier sets how fast you may spend — requests per minute, burst, concurrency,
+   * model access. It never funds anything: the prepaid USD wallet pays for every
+   * call.
+   *
+   * Pay-as-you-go and subscription tiers come back in two separate arrays —
+   * there is no flat `tiers` list on this response. Limits are nested under
+   * `limits`, model and feature grants under `access`.
+   *
    * @example
    * ```typescript
    * const catalog = await client.getTierCatalog();
-   * for (const tier of catalog.tiers) {
-   *   console.log(`${tier.name}: ${tier.rpm} rpm, ${tier.credits_monthly} credits/mo`);
+   * for (const tier of [...catalog.payg, ...catalog.subscriptions]) {
+   *   console.log(
+   *     `${tier.name}: ${tier.limits.rpm} rpm, ` +
+   *     `${tier.limits.concurrent_jobs} concurrent, ` +
+   *     `${tier.price_monthly} ${tier.price_currency}/mo`
+   *   );
    * }
    * ```
    */
@@ -1967,11 +2071,16 @@ export class FotoHub {
    *
    * @returns Current tier info with rate limits and usage stats
    *
+   * The tier caps how fast you may spend — requests per minute, 4-hour burst,
+   * concurrency, model access. What pays for the calls is `wallet.balance_usd`;
+   * at `0` every billed endpoint returns HTTP 402 whatever the tier.
+   *
    * @example
    * ```typescript
    * const tier = await client.getCurrentTier();
    * console.log(`Tier: ${tier.name} (${tier.limits.rpm} rpm)`);
-   * console.log(`Credits used: ${tier.usage.credits_used}`);
+   * console.log(`Today: ${tier.usage.requests_today} / ${tier.limits.daily_quota}`);
+   * console.log(`Balance: $${tier.wallet.balance_usd}`);
    * ```
    */
   async getCurrentTier(): Promise<TierInfo> {
@@ -1983,14 +2092,24 @@ export class FotoHub {
   }
 
   /**
-   * Compare all tiers side-by-side, highlighting the current tier.
+   * Compare all tiers side-by-side in one flat list.
    *
-   * @returns Comparison data with current tier indicator
+   * It does not mark which tier is yours — that comes from
+   * {@link getCurrentTier}. `price_monthly` is in `comparison.currency` (PLN);
+   * only wallet spending is USD.
+   *
+   * @returns Every tier as a comparison row, plus the price currency
    *
    * @example
    * ```typescript
-   * const comparison = await client.compareTiers();
-   * console.log(`Current: ${comparison.current}`);
+   * const [{ tier: mine }, comparison] = await Promise.all([
+   *   client.getCurrentTier(),
+   *   client.compareTiers(),
+   * ]);
+   * for (const row of comparison.tiers) {
+   *   const marker = row.slug === mine ? " ← current" : "";
+   *   console.log(`${row.name}: ${row.rpm} rpm${marker}`);
+   * }
    * ```
    */
   async compareTiers(): Promise<TierComparison> {
@@ -2023,14 +2142,23 @@ export class FotoHub {
   }
 
   /**
-   * Get the current wallet balance and spending info.
+   * Get the wallet: balance, month-to-date spend, and the recent ledger.
    *
-   * @returns Wallet balance, currency, and lifetime spend
+   * The wallet is the only thing that pays for API calls, and it is prepaid —
+   * `balance.available_usd` at `0` means every billed endpoint returns HTTP 402
+   * until you top up. All amounts are USD.
+   *
+   * @returns Balance breakdown, this month's totals, and up to 20 ledger rows
    *
    * @example
    * ```typescript
    * const wallet = await client.getWallet();
-   * console.log(`Balance: ${wallet.balance} ${wallet.currency}`);
+   * console.log(`Available: $${wallet.balance.available_usd}`);
+   * console.log(`Pending: $${wallet.balance.pending_usd}`);
+   * console.log(
+   *   `Spent this month: $${wallet.this_month.spent_usd}` +
+   *   (wallet.this_month.truncated ? " (at least)" : "")
+   * );
    * ```
    */
   async getWallet(): Promise<WalletInfo> {
@@ -2184,14 +2312,18 @@ export class FotoHub {
    * Get proactive context-aware recommendations based on user state.
    * No authentication required. Template-based (<100ms response).
    *
-   * @param options - Context (page, credits, brand status)
+   * `credits_remaining` is a hint about *your end user's* fotohub.app
+   * subscription credits, not your API balance — pass it only if you are
+   * building on top of the web app, and read {@link getBalance} for the prepaid
+   * USD wallet that actually pays for API calls.
+   *
+   * @param options - Context (page, the end user's web credits, brand status)
    * @returns Array of contextual recommendations
    *
    * @example
    * ```typescript
    * const recs = await client.gabrielRecommend({
    *   page: "/generate/new",
-   *   credits_remaining: 5,
    *   has_brand: false,
    * });
    * ```
