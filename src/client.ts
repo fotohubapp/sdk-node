@@ -39,6 +39,7 @@ import type {
   CreditsInfo,
   OverageResult,
   TopupPackage,
+  TopupPackageList,
   TopupResult,
   TransactionOptions,
   TransactionPage,
@@ -102,7 +103,7 @@ const DEFAULT_IMAGE_MODEL = "seedream-5-0-260128";
 // it has its own method rather than being reachable through generateVideo().
 const DEFAULT_SEEDANCE_MODEL = "seedance-2-5";
 
-const SDK_VERSION = "1.10.0";
+const SDK_VERSION = "1.11.0";
 const USER_AGENT = `fotohub-sdk-node/${SDK_VERSION}`;
 
 /**
@@ -1292,21 +1293,23 @@ export class FotoHub {
   }
 
   /**
-   * Get available API subscription plans.
+   * Get available API subscription plans — **always empty**.
    *
-   * These plans are still published with a PLN price and a monthly credit grant.
-   * Neither pays for API usage: every call is charged in USD from the prepaid
-   * wallet, so a key on a plan with a credit grant and a $0 balance still gets a
-   * 402. A plan governs rate limits and model access.
+   * @deprecated There are no paid API plans. Paid plans were retired on
+   * 2026-08-13 and the endpoint answers `{"plans": []}`: a 200 with nothing to
+   * iterate. Rate limits follow the prepaid USD wallet, so
+   * {@link topupWallet} / {@link createTopup} is the upgrade path, and
+   * {@link compareTiers} is what to show a customer choosing limits.
    *
-   * @returns Array of available plans with features and rate limits
+   * Kept because it is a published route and returning an empty array is kinder
+   * to existing loops than removing the method.
+   *
+   * @returns An empty array
    *
    * @example
    * ```typescript
    * const plans = await client.getPlans();
-   * for (const plan of plans) {
-   *   console.log(`${plan.name}: ${plan.rate_limit_rpm} req/min`);
-   * }
+   * console.log(plans.length); // 0 — compare tiers and fund the wallet instead
    * ```
    */
   async getPlans(): Promise<ApiPlan[]> {
@@ -1379,8 +1382,10 @@ export class FotoHub {
   /**
    * Get available wallet top-up packages.
    *
-   * Each package credits its face value in USD to the prepaid wallet — there is
-   * no bonus and no credit unit involved.
+   * A package credits `total_usd` — the amount paid plus any volume bonus. From
+   * $500 up, the bonus ladder adds extra spendable dollars: 5% at $500 rising to
+   * 20% at $15,000, so $1,000 paid credits $1,100 and $15,000 credits $18,000.
+   * The bonus is real balance, not a credit unit and not scoped to any feature.
    *
    * @returns Array of purchasable top-up packages
    *
@@ -1388,7 +1393,7 @@ export class FotoHub {
    * ```typescript
    * const packages = await client.getTopupPackages();
    * for (const pkg of packages) {
-   *   console.log(`${pkg.name}: $${pkg.amount_usd} credited to the wallet`);
+   *   console.log(`${pkg.name} → $${pkg.total_usd} in the wallet (+$${pkg.bonus_usd} free)`);
    * }
    * ```
    */
@@ -1407,18 +1412,50 @@ export class FotoHub {
   }
 
   /**
+   * Get the top-up packages together with the bonus ladder and the custom-amount
+   * bounds, i.e. the whole `GET /v1/billing/topup/packages` payload.
+   *
+   * Use this over {@link getTopupPackages} when quoting a custom amount: the
+   * ladder is what decides the bonus, and `min_usd`/`max_usd` are what the API
+   * will accept. Recomputing a bonus from a hardcoded table drifts the moment a
+   * rung changes.
+   *
+   * @example
+   * ```typescript
+   * const { bonus_tiers, min_usd, max_usd } = await client.getTopupPackageList();
+   * const bonusFor = (usd: number) => {
+   *   const tier = bonus_tiers.find((t) => usd >= t.min_usd);
+   *   // Floored to the cent, matching the server.
+   *   return tier ? Math.floor(usd * tier.pct * 100) / 100 : 0;
+   * };
+   * console.log(bonusFor(2500)); // 300
+   * ```
+   */
+  async getTopupPackageList(): Promise<TopupPackageList> {
+    return await this.request<TopupPackageList>({
+      method: "GET",
+      path: "/v1/billing/topup/packages",
+      requiresAuth: true,
+    });
+  }
+
+  /**
    * Buy a wallet top-up package. Returns a checkout URL for payment.
    *
-   * Payment credits `amount_usd` to the prepaid wallet, which is the only thing
-   * that pays for API calls.
+   * Payment credits `total_usd` (the amount paid plus any volume bonus) to the
+   * prepaid wallet, which is the only thing that pays for API calls.
    *
-   * @param packageSlug - The slug of the package to purchase
-   *   (e.g. "topup-50", "topup-100", "topup-250", "topup-500", "topup-1000", "topup-5000")
+   * @param packageSlug - The slug of the package to purchase. Starter rungs:
+   *   "topup-50" ($15), "topup-100" ($25), "topup-250" ($60), "topup-500" ($120)
+   *   — historical names that do NOT match their amounts. Bonus-earning rungs:
+   *   "scale-500", "scale-1000", "scale-2000", "scale-3000", "scale-5000",
+   *   "scale-7500", "scale-10000", "scale-15000", where the number IS the amount
+   *   in USD. Call {@link getTopupPackages} rather than hardcoding a slug.
    * @returns Checkout session with payment URL
    *
    * @example
    * ```typescript
-   * const topup = await client.createTopup("topup-500");
+   * const topup = await client.createTopup("scale-1000"); // pay $1,000, get $1,100
    * // Redirect user to topup.checkout_url for payment
    * ```
    */
@@ -2049,14 +2086,20 @@ export class FotoHub {
    * there is no flat `tiers` list on this response. Limits are nested under
    * `limits`, model and feature grants under `access`.
    *
+   * Nothing here has a price. `price_monthly` is `0` on pay-as-you-go entries and
+   * `null` on every `sub-*` one, all of which carry `purchasable: false` — the
+   * `subscriptions` array survives because those rows are the live rate-limit
+   * definitions for accounts that already hold a `sub-*` tier, not an offer.
+   *
    * @example
    * ```typescript
    * const catalog = await client.getTierCatalog();
    * for (const tier of [...catalog.payg, ...catalog.subscriptions]) {
+   *   // `-1` means uncapped, so print it as such rather than as "-1 GB".
+   *   const storage = tier.limits.storage_gb < 0 ? "unlimited" : `${tier.limits.storage_gb} GB`;
    *   console.log(
    *     `${tier.name}: ${tier.limits.rpm} rpm, ` +
-   *     `${tier.limits.concurrent_jobs} concurrent, ` +
-   *     `${tier.price_monthly} ${tier.price_currency}/mo`
+   *     `${tier.limits.concurrent_jobs} concurrent, ${storage} storage`
    *   );
    * }
    * ```
@@ -2098,10 +2141,13 @@ export class FotoHub {
    * Compare all tiers side-by-side in one flat list.
    *
    * It does not mark which tier is yours — that comes from
-   * {@link getCurrentTier}. `price_monthly` is in `comparison.currency` (PLN);
-   * only wallet spending is USD.
+   * {@link getCurrentTier}. No row carries a price: the response states
+   * `currency: "USD"`, `billing_model: "prepaid_wallet_usd"` and
+   * `subscriptions_retired: true`, and marks every row `purchasable: false` with
+   * an `upgrade_path` of `"wallet_topup"` or, for `sub-enterprise`,
+   * `"contact_sales"`. Compare on `rpm` / `concurrent_jobs`.
    *
-   * @returns Every tier as a comparison row, plus the price currency
+   * @returns Every tier as a comparison row, plus the billing model
    *
    * @example
    * ```typescript
@@ -2124,24 +2170,37 @@ export class FotoHub {
   }
 
   /**
-   * Subscribe to a tier (returns a checkout URL for payment).
+   * @deprecated Retired on 2026-08-13 — `POST /v1/tiers/subscribe` now answers
+   * **HTTP 410** for every tier and this method always throws.
    *
-   * @param tierSlug - The tier slug to subscribe to (e.g. "sub-developer", "sub-startup")
-   * @returns Checkout URL to complete the subscription
+   * There are no paid API plans any more. Rate limits follow the prepaid wallet
+   * instead: top up more and the tier rises on its own, with no monthly
+   * commitment to cancel. Replace a call to this method with
+   * {@link topupWallet} or {@link createTopup} — and note the switch is in your
+   * favour, since from $500 up a top-up earns a volume bonus of 5–20% in extra
+   * spendable dollars.
    *
-   * @example
-   * ```typescript
-   * const { checkout_url } = await client.subscribeTier("sub-developer");
-   * // Redirect user to checkout_url
-   * ```
+   * `sub-enterprise` is the one exception and was never bought this way: it is a
+   * contract, via `POST /v1/tiers/enterprise/apply`.
+   *
+   * Kept as a throwing stub rather than deleted so that upgrading the SDK gives
+   * you a compile-time deprecation and a clear runtime message, instead of a
+   * missing-method `TypeError` with nothing pointing at the replacement.
+   *
+   * @param tierSlug - Ignored.
+   * @throws Always — {@link FotoHubError} with code `api_subscriptions_retired`.
    */
   async subscribeTier(tierSlug: string): Promise<{ checkout_url: string }> {
-    return await this.request<{ checkout_url: string }>({
-      method: "POST",
-      path: "/v1/tiers/subscribe",
-      body: { tier: tierSlug },
-      requiresAuth: true,
-    });
+    void tierSlug;
+    throw new FotoHubError(
+      "API subscription plans were retired on 2026-08-13. Rate limits now follow " +
+        "your prepaid wallet balance, so top up instead: client.topupWallet(amountUsd) " +
+        "or client.createTopup(packageSlug). Top-ups from $500 up earn a 5-20% volume " +
+        "bonus in extra spendable dollars. For sub-enterprise, apply via " +
+        "POST /v1/tiers/enterprise/apply.",
+      "api_subscriptions_retired",
+      410
+    );
   }
 
   /**
@@ -2175,16 +2234,27 @@ export class FotoHub {
   /**
    * Top up the wallet balance (returns a Stripe checkout URL).
    *
-   * @param amountUsd - Amount in USD to add (minimum 10, maximum 15000)
+   * From $500 up the amount earns a volume bonus in extra spendable dollars —
+   * 5% at $500, 10% at $1,000, rising to 20% at $15,000 — credited in the same
+   * transaction as the payment. `total_credited_usd` is what the balance
+   * actually gains, and it is the figure to show a customer.
+   *
+   * The bonus is a function of the amount, not of the package: passing 1000 here
+   * earns the same +$100 as buying the "scale-1000" package.
+   *
+   * @param amountUsd - Amount in USD to add (minimum 10, maximum 15000, whole
+   *   cents only — $10.005 is rejected rather than rounded)
    * @param payCurrency - Optional Stripe charge currency. Defaults to "usd";
    *   pass "pln" to let a Polish customer pay by BLIK/card/bank transfer while
    *   the wallet is still credited `amountUsd`.
-   * @returns Checkout URL plus the USD amount the wallet is credited on payment
+   * @returns Checkout URL, the USD amount paid, the bonus, and the total credited
    *
    * @example
    * ```typescript
-   * const { checkout_url } = await client.topupWallet(100);
-   * // Redirect user to checkout_url for payment
+   * const topup = await client.topupWallet(1000);
+   * console.log(`Pay $${topup.amount_usd}, get $${topup.total_credited_usd}`);
+   * // → Pay $1000, get $1100
+   * // Redirect user to topup.checkout_url for payment
    * ```
    */
   async topupWallet(
@@ -2192,9 +2262,17 @@ export class FotoHub {
     payCurrency?: "usd" | "pln"
   ): Promise<{
     checkout_url: string;
+    /** The amount charged, in USD. */
     amount_usd: number;
+    /** Volume bonus in extra spendable dollars; `0` below $500. */
+    bonus_usd: number;
+    /** `amount_usd + bonus_usd` — the balance increase on payment. */
+    total_credited_usd: number;
     pay_currency: string;
-    /** @deprecated Always `null` — no bonus was ever granted. */
+    /**
+     * @deprecated Always `null`, and never granted. The volume reward is
+     * `bonus_usd`, in dollars — this product has no credits.
+     */
     bonus_credits?: number | null;
   }> {
     const body: Record<string, unknown> = { amount_usd: amountUsd };
@@ -2203,6 +2281,8 @@ export class FotoHub {
     return await this.request<{
       checkout_url: string;
       amount_usd: number;
+      bonus_usd: number;
+      total_credited_usd: number;
       pay_currency: string;
       bonus_credits?: number | null;
     }>({

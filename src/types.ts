@@ -900,10 +900,14 @@ export interface PricingCatalog {
 /**
  * One entry from `GET /v1/billing/plans`.
  *
- * A plan buys rate limits and model access. It does **not** fund API calls:
- * every call is charged to the prepaid USD wallet, so a subscriber with a $0
- * balance still gets HTTP 402. The `credits_monthly` grant is spendable in the
- * fotohub.app web app only.
+ * There are none. The endpoint answers `{"plans": []}` — a 200 with nothing to
+ * iterate — because paid API plans were retired on 2026-08-13 and
+ * `POST /v1/tiers/subscribe` now answers 410. Rate limits follow the prepaid USD
+ * wallet: fund it and the tier resolves on its own.
+ *
+ * The type is kept so existing `for (const plan of await client.getPlans())`
+ * code still compiles against an empty array rather than breaking on a missing
+ * export. Every field below is retained for that reason alone; none will arrive.
  */
 export interface ApiPlan {
   /** Plan identifier (e.g. "api-developer") */
@@ -911,15 +915,14 @@ export interface ApiPlan {
   /** Plan display name */
   name: string;
   /**
-   * Monthly subscription price in PLN, or `null` on the enterprise plan (priced
-   * per contract). API plans kept their PLN prices; only wallet spending is USD.
+   * @deprecated No plan is returned, so no price is either. There is no PLN
+   * anywhere in API billing — the wallet is USD only.
    */
-  price_pln: number | null;
+  price_pln?: number | null;
   /**
-   * Monthly credit grant, or `null` for "uncapped". Spendable on fotohub.app,
-   * never on the API — see the note on this interface.
+   * @deprecated A grant spendable in the fotohub.app web app, never on the API.
    */
-  credits_monthly: number | null;
+  credits_monthly?: number | null;
   /** Requests-per-minute rate limit */
   rate_limit_rpm: number;
   /** Plan features, as display strings */
@@ -932,9 +935,9 @@ export interface ApiPlan {
   max_upload_mb?: number;
   /** @deprecated Not returned by the API. Use `slug`. */
   id?: string;
-  /** @deprecated Not returned by the API. Use `price_pln`. */
+  /** @deprecated Not returned by the API. There is no monthly price. */
   price_monthly?: number;
-  /** @deprecated Not returned by the API. Use `credits_monthly`. */
+  /** @deprecated Not returned by the API. The API has no credit unit. */
   credits_included?: number;
 }
 
@@ -984,26 +987,68 @@ export interface OverageResult {
 }
 
 export interface TopupPackage {
-  /** Package slug identifier (e.g. "topup-100") */
+  /** Package slug identifier (e.g. "topup-100", "scale-1000") */
   slug: string;
-  /** Display name (e.g. "$25") */
+  /**
+   * Display name, which is the amount PAID (e.g. "$1,000") — not the amount
+   * credited. With a volume bonus those differ; `total_usd` is what lands in
+   * the wallet.
+   */
   name: string;
-  /** Charge amount in USD */
+  /** Charge amount in USD — what Stripe bills. */
   amount_usd: number;
+  /**
+   * Extra dollars credited on top of `amount_usd`, from the volume bonus
+   * ladder. Real money in the wallet, spendable on any operation, credited in
+   * the same transaction as the payment. `0` below the first rung ($500).
+   *
+   * Not to be confused with the removed `bonus_credits`: this is USD, and it is
+   * granted rather than merely advertised.
+   */
+  bonus_usd: number;
+  /** `amount_usd + bonus_usd` — the balance increase. */
+  total_usd: number;
+  /** `bonus_usd` as a percentage of `amount_usd`, e.g. `10` for the $1,000 rung. */
+  bonus_pct: number;
+  /** Set on the rung marketed as the common choice. */
+  popular?: boolean;
+  /** Set on the rung with the highest bonus percentage. */
+  best_value?: boolean;
   /**
    * @deprecated Removed from the API on 2026-08-05. Top-up packages are
    * USD-only; use `amount_usd`.
    */
   amount_pln?: number;
   /**
-   * @deprecated Never granted. The top-up webhook credits `amount_usd` and
-   * nothing else, so this described a transfer no code performed; the API has
-   * no credits to grant in any case. `/v1/tiers/wallet/topup` still returns the
-   * key as `null` for one release and the package list omits it entirely.
+   * @deprecated Never granted, and gone from the package list. This described a
+   * credit transfer no code performed, and the API has no credits at all — its
+   * balance is prepaid USD. The volume reward is `bonus_usd` above, which the
+   * top-up webhook really does credit.
    */
   bonus_credits?: number | null;
-  /** @deprecated Never applied — see `bonus_credits`. */
-  bonus_pct?: number | null;
+}
+
+/**
+ * The ladder `bonus_usd` is computed from, as published by
+ * `GET /v1/billing/topup/packages`. Highest threshold first; the first entry at
+ * or below the amount paid wins, and the bonus is floored to the cent.
+ */
+export interface TopupBonusTier {
+  /** Minimum amount paid, in USD, to earn `pct`. */
+  min_usd: number;
+  /** Bonus as a fraction of the amount paid, e.g. `0.2` for 20%. */
+  pct: number;
+}
+
+/** Full response of `GET /v1/billing/topup/packages`. */
+export interface TopupPackageList {
+  packages: TopupPackage[];
+  /** Smallest accepted custom `amount_usd`. */
+  min_usd: number;
+  /** Largest accepted custom `amount_usd`; above this, contact sales. */
+  max_usd: number;
+  bonus_tiers: TopupBonusTier[];
+  notes?: string;
 }
 
 export interface TopupResult {
@@ -1488,21 +1533,36 @@ export interface TierCatalogEntry {
   /** One-line description of who the tier is for */
   description: string;
   /**
-   * Monthly fee, in `price_currency`. `0` on every pay-as-you-go tier, which
-   * has no monthly fee at all.
+   * `0` on pay-as-you-go entries and `null` on every subscription entry. Nothing
+   * in this catalog has a price: a tier is a rate-limit definition, not a
+   * product. Do not render it as a fee.
    */
-  price_monthly: number;
+  price_monthly: number | null;
   /**
-   * Currency of `price_monthly`, per entry. Pay-as-you-go entries are `"USD"`
-   * (their wallet thresholds are USD); subscription entries are still `"PLN"`.
-   * Read this rather than the payload's top-level `currency`, which is the
-   * wallet currency and would render a 799 PLN plan as 799 USD.
+   * `"USD"` on pay-as-you-go entries and `null` on subscription entries — there
+   * is no PLN anywhere on this endpoint any more.
    */
-  price_currency: "USD" | "PLN";
+  price_currency: "USD" | null;
   /** Rate and capacity limits. */
   limits: TierLimits;
   /** Which model families and features the tier unlocks. */
   access: TierAccess;
+  /**
+   * `false` on every entry: no tier can be bought. Present on subscription
+   * entries; absent on pay-as-you-go ones, which were never purchasable either.
+   */
+  purchasable?: false;
+  /**
+   * `true` on the three retired `sub-*` tiers. They stay in the catalog because
+   * they are live rate-limit definitions for accounts that already hold one.
+   * Absent on `sub-enterprise`, which is a current contract, and on PAYG.
+   */
+  legacy?: boolean;
+  /**
+   * How to reach these limits: `"wallet_topup"` on everything self-serve,
+   * `"contact_sales"` on `sub-enterprise`.
+   */
+  upgrade_path?: "wallet_topup" | "contact_sales";
   /**
    * Wallet thresholds that auto-resolve a pay-as-you-go tier, in USD. Absent on
    * subscription entries. This is an object, not the prose string the type
@@ -1629,13 +1689,25 @@ export interface TierComparisonRow {
   description: string;
   /** `"payg"` or `"subscription"`. */
   category: string;
-  /** Monthly fee in `TierComparison.currency`. `0` for pay-as-you-go. */
-  price_monthly: number | null;
+  /**
+   * `false` on every row — no tier is for sale. Rate limits follow the prepaid
+   * wallet, so there is nothing to buy here.
+   */
+  purchasable: boolean;
+  /**
+   * How to reach the row's limits: `"wallet_topup"`, or `"contact_sales"` on
+   * `sub-enterprise`.
+   */
+  upgrade_path: "wallet_topup" | "contact_sales";
   /** Requests per minute. */
   rpm: number;
   /** Jobs that may run at the same time. */
   concurrent_jobs: number;
-  /** Included storage, in GB. */
+  /**
+   * Included storage in GB, or **`-1` for uncapped** (`sub-enterprise`). Render
+   * a negative as "unlimited": interpolated raw it reads as a negative
+   * allowance, which is how a live page came to display "Storage -1 GB".
+   */
   storage_gb: number;
   /** Model family grant. */
   models: string;
@@ -1646,11 +1718,17 @@ export interface TierComparisonRow {
   /** Support channel; defaults to `"community"`. */
   support: string;
   /**
-   * @deprecated A subscription grant spendable only on fotohub.app, never on the
-   * API — the API is prepaid in USD. `0` on every pay-as-you-go tier. Compare
-   * tiers on `rpm`/`concurrent_jobs`; fund calls from the wallet.
+   * @deprecated Removed from the response. It quoted a monthly fee for plans
+   * nobody can buy. Rate limits follow the prepaid wallet: read `rpm` /
+   * `concurrent_jobs` and fund the wallet to raise them.
    */
-  monthly_credits: number;
+  price_monthly?: number | null;
+  /**
+   * @deprecated Removed from the response. It described a grant spendable only
+   * on fotohub.app, never on the API. Compare tiers on `rpm` /
+   * `concurrent_jobs`; fund calls from the wallet.
+   */
+  monthly_credits?: number;
 }
 
 /**
@@ -1662,11 +1740,15 @@ export interface TierComparisonRow {
  */
 export interface TierComparison {
   tiers: TierComparisonRow[];
-  /**
-   * Currency of `price_monthly` across all rows. `"PLN"` — subscription tiers
-   * kept their PLN prices; only wallet spending is USD.
-   */
+  /** `"USD"`. The wallet is the only thing money is denominated in. */
   currency: string;
+  /** `"prepaid_wallet_usd"`. */
+  billing_model: string;
+  /**
+   * `true`. `POST /v1/tiers/subscribe` answers 410 for every tier; the `sub-*`
+   * rows are rate-limit definitions for accounts that already hold one.
+   */
+  subscriptions_retired: boolean;
 }
 
 /**

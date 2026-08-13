@@ -155,6 +155,8 @@ export type {
   CreditsInfo,
   OverageResult,
   TopupPackage,
+  TopupBonusTier,
+  TopupPackageList,
   TopupResult,
   TransactionOptions,
   TransactionPage,
