@@ -291,6 +291,46 @@ test("autoEditVideoProject: POST .../auto-edit with camelCase options, wait poll
   assert.deepEqual(job.report, { done: [] });
   await client.applyVideoAutoEdit(ID, JOB);
   assert.equal(calls.at(-1).url, `/v1/video/projects/${ID}/auto-edit/${JOB}/apply`);
+  assert.deepEqual(calls.at(-1).body, {});
+});
+
+test("autoEditVideoProject: toggles, language, aspect and the cut brief go on the wire", async () => {
+  const { client, calls } = harness([json(202, { jobId: JOB, status: "running", projectId: ID })]);
+  const brief = { profile: "highlights", targetTicks: 1000 };
+  const job = await client.autoEditVideoProject(ID, {
+    mode: "cut",
+    brief,
+    toggles: { music: false },
+    language: "pl",
+    aspect: "9:16",
+  });
+  assert.equal(job.status, "running");
+  assert.deepEqual(calls[0].body, { mode: "cut", brief, toggles: { music: false }, language: "pl", aspect: "9:16" });
+});
+
+test("applyVideoAutoEdit: expectedSaveRev is sent; a moved project is a SaveConflictError", async () => {
+  const { client, calls } = harness([
+    json(200, { jobId: JOB, projectId: ID, committed: true, saveRev: 8 }),
+    json(409, { error: { code: "save-conflict", message: "moved", currentSaveRev: 9 } }),
+  ]);
+  const ok = await client.applyVideoAutoEdit(ID, JOB, { expectedSaveRev: 7 });
+  assert.deepEqual(calls[0].body, { expectedSaveRev: 7 });
+  assert.equal(ok.committed, true);
+  assert.equal(ok.saveRev, 8);
+  await assert.rejects(client.applyVideoAutoEdit(ID, JOB), SaveConflictError);
+});
+
+test("applyVideoOps: note is sent", async () => {
+  const { client, calls } = harness([json(200, { ok: true, rolledBack: false })]);
+  await client.applyVideoOps(ID, { ops: [], note: "why", label: "l" });
+  assert.equal(calls[0].body.note, "why");
+  assert.equal(calls[0].body.label, "l");
+});
+
+test("lintVideoProject: severity accepts a list", async () => {
+  const { client, calls } = harness([json(200, { findings: [], counts: { error: 0, warn: 0, info: 0 }, available: true })]);
+  await client.lintVideoProject(ID, { rules: ["a"], severity: ["error", "warn"] });
+  assert.deepEqual(calls[0].body, { rules: ["a"], severity: ["error", "warn"] });
 });
 
 // ─── Fix round 1: retry safety, explicit-key wait, 409 codes, 422 details ─────

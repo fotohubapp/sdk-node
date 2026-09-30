@@ -86,6 +86,9 @@ import type {
   RenderVideoOptions,
   VideoJob,
   AutoEditOptions,
+  AutoEditJob,
+  ApplyAutoEditOptions,
+  ApplyAutoEditResult,
   WaitForVideoJobOptions,
   VideoOpsCatalog,
   DetectScenesOptions,
@@ -2094,6 +2097,7 @@ export class FotoHub {
     if (options.dryRun !== undefined) body.dryRun = options.dryRun;
     if (options.expectedSaveRev !== undefined) body.expectedSaveRev = options.expectedSaveRev;
     if (options.label !== undefined) body.label = options.label;
+    if (options.note !== undefined) body.note = options.note;
 
     return this.request<ApplyOpsResult>({
       method: "POST",
@@ -2201,29 +2205,28 @@ export class FotoHub {
   }
 
   /**
-   * @experimental Auto-Edit is not generally available yet; the request and
-   * job shapes may still change.
-   *
-   * Start a server-side Auto-Edit on a project. Returns the queued job; with
-   * `wait: true` the finished one, whose `report` says what was done and
-   * skipped. With `autoApply: false` the result stays a draft until
-   * {@link applyVideoAutoEdit}.
+   * Start a server-side Auto-Edit on a project. Paid: a base fee up front plus
+   * the AI usage of the run. Returns the running job (202); with `wait: true`
+   * the finished one, whose `stages`, `report` and `usage` say what was done,
+   * skipped and spent. With `autoApply: false` the result stays a draft for
+   * about 30 minutes until {@link applyVideoAutoEdit}.
    */
-  async autoEditVideoProject(projectId: string, options: AutoEditOptions = {}): Promise<VideoJob> {
+  async autoEditVideoProject(projectId: string, options: AutoEditOptions = {}): Promise<AutoEditJob> {
     const body: Record<string, unknown> = {};
     for (const key of [
+      "mode",
       "style",
       "toggles",
       "language",
       "aspect",
       "aiBudgetUsd",
       "autoApply",
-      "mode",
+      "brief",
     ] as const) {
       if (options[key] !== undefined) body[key] = options[key];
     }
 
-    const job = await this.request<VideoJob>({
+    const job = await this.request<AutoEditJob>({
       method: "POST",
       path: `/v1/video/projects/${encodeURIComponent(projectId)}/auto-edit`,
       body,
@@ -2231,22 +2234,31 @@ export class FotoHub {
       headers: idempotencyHeaders(options.idempotencyKey),
     });
     if (!options.wait) return job;
-    return this.waitForVideoJob(job.jobId, {
+    return (await this.waitForVideoJob(job.jobId, {
       intervalMs: options.intervalMs,
       maxWaitMs: options.maxWaitMs,
-    });
+    })) as unknown as AutoEditJob;
   }
 
   /**
-   * @experimental See {@link autoEditVideoProject}.
-   *
-   * Commit the draft of an Auto-Edit job that ran with `autoApply: false`.
+   * Commit the draft of a finished Auto-Edit job that ran with
+   * `autoApply: false`. No extra charge. Rejects with `save-conflict` (409,
+   * `currentSaveRev`) when the project moved past `expectedSaveRev` (default:
+   * the revision the run started from); the draft is kept. A draft is used up
+   * by the commit, and a second apply (or an expired draft) answers 404
+   * `draft-not-found`.
    */
-  async applyVideoAutoEdit(projectId: string, jobId: string): Promise<VideoJob> {
-    return this.request<VideoJob>({
+  async applyVideoAutoEdit(
+    projectId: string,
+    jobId: string,
+    options: ApplyAutoEditOptions = {}
+  ): Promise<ApplyAutoEditResult> {
+    const body: Record<string, unknown> = {};
+    if (options.expectedSaveRev !== undefined) body.expectedSaveRev = options.expectedSaveRev;
+    return this.request<ApplyAutoEditResult>({
       method: "POST",
       path: `/v1/video/projects/${encodeURIComponent(projectId)}/auto-edit/${encodeURIComponent(jobId)}/apply`,
-      body: {},
+      body,
       requiresAuth: true,
     });
   }

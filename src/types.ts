@@ -2114,14 +2114,20 @@ export interface ListVideoProjectsResult {
 }
 
 export interface ApplyVideoOpsOptions {
-  /** 1 to 40 operations, applied atomically: any violation rolls the whole batch back. */
+  /**
+   * 1 to 40 operations. An operation the engine rejects is skipped and reported
+   * per op; the batch rolls back (`rolledBack: true`) only when the resulting
+   * document would violate the timeline invariants.
+   */
   ops: OpIntent[];
   /** Validate and preview without saving. */
   dryRun?: boolean;
   /** Reject with `save-conflict` (409) when the project changed since you read it. */
   expectedSaveRev?: number;
-  /** Version label recorded in the project history. */
+  /** Version label recorded in the project history (at most 60 characters). */
   label?: string;
+  /** Free-form note on why the batch was applied (at most 2000 characters). */
+  note?: string;
 }
 
 export interface VideoOpResult {
@@ -2159,9 +2165,13 @@ export interface VideoDigestResult {
   missing?: string[];
 }
 
+export type VideoLintSeverity = "error" | "warn" | "warning" | "info";
+
 export interface VideoLintOptions {
+  /** Rule ids to run (at most 32). */
   rules?: string[];
-  severity?: "error" | "warn" | "info";
+  /** Severities to report (`warning` is a synonym of `warn`). A single value is accepted too. */
+  severity?: VideoLintSeverity | VideoLintSeverity[];
 }
 
 export interface VideoLintFinding {
@@ -2303,6 +2313,84 @@ export interface VideoJob extends Partial<CaptureResult> {
   [key: string]: unknown;
 }
 
+/** One stage of an Auto-Edit run, in the order the run reaches them. */
+export interface AutoEditStage {
+  stage: "signals" | "cuts" | "brief" | "broll" | "graphics" | "audio" | "captions" | "apply" | (string & {});
+  status: "running" | "done" | "skipped" | "error" | (string & {});
+  /** 0 to 100 within the stage, when known. */
+  pct?: number;
+  detail?: string;
+}
+
+/** Token counters of an Auto-Edit run (no model names) and what they were billed. */
+export interface AutoEditUsage {
+  inputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  /** True once the AI usage of the finished run has been settled. */
+  billed: boolean;
+  units?: number;
+  chargedUsd?: number;
+  chargedCredits?: number;
+  /** Part of the usage that could not be collected. */
+  uncollectedUsd?: number;
+}
+
+/**
+ * State of an Auto-Edit job: the 202 answer of {@link FotoHub.autoEditVideoProject}
+ * (`jobId`, `status`, `projectId`, `billing`) and the job view returned by
+ * {@link FotoHub.getVideoJob}.
+ */
+export interface AutoEditJob {
+  jobId: string;
+  status: VideoJobStatus;
+  kind?: "auto_edit";
+  projectId?: string;
+  /** 0 to 100. */
+  progress?: number;
+  stages?: AutoEditStage[];
+  /** What was done and skipped; carries `committed`. */
+  report?: Record<string, unknown>;
+  usage?: AutoEditUsage;
+  /** True once the result is in the project; false while it is a draft (`autoApply: false`). */
+  committed?: boolean;
+  /** Project revision after the commit. */
+  saveRev?: number;
+  /** Revision the run started from; the default `expectedSaveRev` of the apply. */
+  baseSaveRev?: number;
+  /** Project revision now, on a `save-conflict`. */
+  currentSaveRev?: number;
+  /** Seconds left before an unapplied draft expires. */
+  expiresInSeconds?: number;
+  unchanged?: boolean;
+  draftId?: string;
+  error?: { code: string; message?: string };
+  reason?: string;
+  /** On failed / cancelled jobs: whether the charge was returned. */
+  refunded?: boolean;
+  billing?: VideoJobBilling;
+  chargedCredits?: number;
+  [key: string]: unknown;
+}
+
+/** Answer of {@link FotoHub.applyVideoAutoEdit}. */
+export interface ApplyAutoEditResult {
+  jobId: string;
+  projectId: string;
+  committed: true;
+  saveRev?: number;
+  unchanged?: boolean;
+  digest?: VideoProjectDigest;
+  versionSaved?: boolean;
+  warnings?: unknown[];
+}
+
+export interface ApplyAutoEditOptions {
+  /** Reject with `save-conflict` (409) when the project moved past this revision. Defaults to the revision the run started from. */
+  expectedSaveRev?: number;
+}
+
 export interface WaitForVideoJobOptions {
   /** Polling interval in milliseconds. Default 3 000. */
   intervalMs?: number;
@@ -2312,17 +2400,37 @@ export interface WaitForVideoJobOptions {
   onProgress?: (job: VideoJob) => void;
 }
 
+export interface AutoEditToggles {
+  cutSilences?: boolean;
+  removeFillers?: boolean;
+  broll?: boolean;
+  zooms?: boolean;
+  graphics?: boolean;
+  sfx?: boolean;
+  music?: boolean;
+  captions?: boolean;
+  maps?: boolean;
+}
+
 export interface AutoEditOptions {
-  style?: "viral" | "podcast" | "explainer" | "storytelling" | "captions-only";
-  toggles?: Record<string, unknown>;
-  language?: string;
-  aspect?: VideoProjectAspect;
-  /** Ceiling (USD, 0 to 50) for AI generations; 0 uses stock only. */
-  aiBudgetUsd?: number;
-  /** Commit the result to the project (default true); false leaves a draft to approve. */
-  autoApply?: boolean;
+  /** `auto_edit` (default) edits the whole project and needs `style`; `cut` proposes a cut from `brief`. */
   mode?: "auto_edit" | "cut";
+  /** Required for `mode: "auto_edit"`. */
+  style?: "viral" | "podcast" | "explainer" | "storytelling" | "captions-only";
+  /** Every toggle defaults to on; `false` switches one off. */
+  toggles?: AutoEditToggles;
+  /** Default `auto`. */
+  language?: "pl" | "en" | "de" | "auto";
+  /** Defaults to the project's current aspect, else 16:9. */
+  aspect?: "16:9" | "9:16" | "1:1" | "4:5";
+  /** Ceiling (USD, 0 to 50) for AI generations; 0 (default) uses stock and existing media only. */
+  aiBudgetUsd?: number;
+  /** Commit the result to the project (default true); false keeps a draft (about 30 min) to commit with {@link FotoHub.applyVideoAutoEdit}. */
+  autoApply?: boolean;
+  /** Required for `mode: "cut"`: the cut brief (profile, targetTicks, pacing, order, ...). */
+  brief?: Record<string, unknown>;
   idempotencyKey?: string;
+  /** Poll until the run finishes and return the finished job. Default false. */
   wait?: boolean;
   maxWaitMs?: number;
   /** Polling interval when `wait` is true. Default 3 000. */

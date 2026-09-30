@@ -82,6 +82,23 @@ export type Type =
   | "zoom"
   | "pan";
 export type Bgcolor = string | null;
+export type Blendmode =
+  | (
+      | "multiply"
+      | "screen"
+      | "darken"
+      | "lighten"
+      | "difference"
+      | "exclusion"
+      | "overlay"
+      | "soft-light"
+      | "hard-light"
+      | "color-dodge"
+      | "color-burn"
+      | "lighter"
+    )
+  | null;
+export type Captionpreset = ("oneWord" | "whisper" | "cascade" | "spotlight" | "paper" | "pop" | "stark") | null;
 export type Color = string | null;
 export type Brightness = number | null;
 export type Contrast = number | null;
@@ -387,6 +404,8 @@ export interface AllowedClipPatch {
   animationIn?: ClipAnimation | null;
   animationOut?: ClipAnimation | null;
   bgColor?: Bgcolor;
+  blendMode?: Blendmode;
+  captionPreset?: Captionpreset;
   color?: Color;
   colorCorrection?: ColorCorrection | null;
   cropRegion?: CropRegion | null;
