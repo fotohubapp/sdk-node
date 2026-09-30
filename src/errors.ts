@@ -57,9 +57,10 @@ export class AuthenticationError extends FotoHubError {
  */
 export class PermissionError extends FotoHubError {
   constructor(
-    message: string = "Insufficient permissions for this operation"
+    message: string = "Insufficient permissions for this operation",
+    code: string = "permission_error"
   ) {
-    super(message, "permission_error", 403);
+    super(message, code, 403);
     this.name = "PermissionError";
   }
 }
@@ -68,8 +69,12 @@ export class PermissionError extends FotoHubError {
  * Thrown when the API returns a 404 Not Found response.
  */
 export class NotFoundError extends FotoHubError {
-  constructor(message: string = "The requested resource was not found") {
-    super(message, "not_found", 404);
+  constructor(
+    message: string = "The requested resource was not found",
+    code: string = "not_found",
+    details?: Record<string, unknown>
+  ) {
+    super(message, code, 404, details);
     this.name = "NotFoundError";
   }
 }
@@ -81,8 +86,13 @@ export class NotFoundError extends FotoHubError {
 export class RateLimitError extends FotoHubError {
   public readonly retryAfter: number | undefined;
 
-  constructor(message: string = "Rate limit exceeded", retryAfter?: number) {
-    super(message, "rate_limit_exceeded", 429);
+  constructor(
+    message: string = "Rate limit exceeded",
+    retryAfter?: number,
+    code: string = "rate_limit_exceeded",
+    details?: Record<string, unknown>
+  ) {
+    super(message, code, 429, details);
     this.name = "RateLimitError";
     this.retryAfter = retryAfter;
   }
@@ -144,9 +154,10 @@ export class InsufficientFundsError extends FotoHubError {
       operation?: string;
       creditsRequired?: number;
       creditsAvailable?: number;
-    } = {}
+    } = {},
+    code: string = "insufficient_funds"
   ) {
-    super(message, "insufficient_funds", 402, { ...fields });
+    super(message, code, 402, { ...fields });
     this.name = "InsufficientFundsError";
     this.requiredUsd = fields.requiredUsd;
     this.balanceUsd = fields.balanceUsd;
@@ -186,9 +197,11 @@ export class ValidationError extends FotoHubError {
 
   constructor(
     message: string = "Request validation failed",
-    fieldErrors?: Record<string, string[]>
+    fieldErrors?: Record<string, string[]>,
+    code: string = "validation_error",
+    details?: Record<string, unknown>
   ) {
-    super(message, "validation_error", 422, { fieldErrors });
+    super(message, code, 422, { fieldErrors, ...details });
     this.name = "ValidationError";
     this.fieldErrors = fieldErrors;
   }
@@ -224,9 +237,11 @@ export class NetworkError extends FotoHubError {
 export class ServerError extends FotoHubError {
   constructor(
     message: string = "Internal server error",
-    statusCode: number = 500
+    statusCode: number = 500,
+    code: string = "server_error",
+    details?: Record<string, unknown>
   ) {
-    super(message, "server_error", statusCode);
+    super(message, code, statusCode, details);
     this.name = "ServerError";
   }
 }
@@ -237,8 +252,13 @@ export class ServerError extends FotoHubError {
 export class JobFailedError extends FotoHubError {
   public readonly jobId: string;
 
-  constructor(jobId: string, message: string = "Generation job failed") {
-    super(message, "job_failed", undefined, { jobId });
+  constructor(
+    jobId: string,
+    message: string = "Generation job failed",
+    code: string = "job_failed",
+    details?: Record<string, unknown>
+  ) {
+    super(message, code, undefined, { jobId, ...details });
     this.name = "JobFailedError";
     this.jobId = jobId;
   }
@@ -273,5 +293,25 @@ export class WebhookError extends FotoHubError {
     super(message, "webhook_error", undefined, { webhookId });
     this.name = "WebhookError";
     this.webhookId = webhookId;
+  }
+}
+
+/**
+ * Thrown on a 409 `save-conflict`: the project changed (in the editor, or by
+ * another caller) after you read it. Re-read it, re-plan against
+ * `currentSaveRev`, and retry with that value as `expectedSaveRev`.
+ */
+export class SaveConflictError extends FotoHubError {
+  /** The project's current `saveRev`, when the server reported it. */
+  public readonly currentSaveRev: number | undefined;
+
+  constructor(
+    message: string = "The project changed since it was read",
+    details?: Record<string, unknown>
+  ) {
+    super(message, "save-conflict", 409, details);
+    this.name = "SaveConflictError";
+    const rev = details?.currentSaveRev;
+    this.currentSaveRev = typeof rev === "number" ? rev : undefined;
   }
 }

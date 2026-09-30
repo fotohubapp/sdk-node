@@ -73,6 +73,27 @@ import type {
   GabrielRecommendation,
   TranslateOptions,
   TranslateResult,
+  CreateVideoProjectOptions,
+  VideoProject,
+  ListVideoProjectsResult,
+  ApplyVideoOpsOptions,
+  ApplyOpsResult,
+  VideoDigestOptions,
+  VideoDigestResult,
+  VideoLintOptions,
+  LintResult,
+  CaptureVideoOptions,
+  RenderVideoOptions,
+  VideoJob,
+  AutoEditOptions,
+  WaitForVideoJobOptions,
+  VideoOpsCatalog,
+  DetectScenesOptions,
+  DetectSilenceOptions,
+  DetectBeatsOptions,
+  TranscribeVideoOptions,
+  VideoAnalysisResult,
+  VideoTranscribeJob,
 } from "./types.js";
 
 import {
@@ -88,6 +109,7 @@ import {
   ServerError,
   JobFailedError,
   JobTimeoutError,
+  SaveConflictError,
 } from "./errors.js";
 
 // parseSSEStream is no longer used here: chatStream() throws instead of
@@ -142,6 +164,20 @@ const IDEMPOTENCY_EXCLUDE_PREFIXES = [
   "/v1/ai/tts/",
   "/v1/story/generate",
 ] as const;
+
+/**
+ * Video timeline routes answer with `{"error": {code, message, details?}}` and
+ * kebab-case codes (`save-conflict`, `media-not-found`, `payment-required`,
+ * `rate-limited`, ...). On these paths the code is passed through to the thrown
+ * error instead of the generic per-status one, so callers can branch on it.
+ */
+const TIMELINE_ERROR_PATH =
+  /^\/v1\/video\/(projects|jobs|ops|detect-scenes|detect-silence|detect-beats|transcribe)(\/|$)/;
+
+/** Headers carrying a caller-supplied idempotency key; none means the client mints one. */
+function idempotencyHeaders(key: string | undefined): Record<string, string> | undefined {
+  return key ? { [IDEMPOTENCY_HEADER]: key } : undefined;
+}
 
 /** Monotonic suffix, so two keys minted in the same millisecond still differ. */
 let idempotencyCounter = 0;
@@ -1955,6 +1991,347 @@ export class FotoHub {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // VIDEO TIMELINE (headless editing of editor projects)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Create a timeline project, optionally from media and/or a template. The
+   * result carries `editorUrl`, which opens the same project in the editor.
+   * Free of charge. A retry with the same idempotency key (sent automatically,
+   * or pass `idempotencyKey`) returns the first result instead of a second project.
+   *
+   * @example
+   * ```typescript
+   * const p = await client.createVideoProject({
+   *   title: "Launch teaser",
+   *   aspect: "9:16",
+   *   media: [{ url: "https://example.com/clip.mp4" }],
+   * });
+   * console.log(p.projectId, p.editorUrl, p.unplacedMedia);
+   * ```
+   */
+  async createVideoProject(options: CreateVideoProjectOptions = {}): Promise<VideoProject> {
+    const body: Record<string, unknown> = {};
+    if (options.title !== undefined) body.title = options.title;
+    if (options.aspect !== undefined) body.aspect = options.aspect;
+    if (options.fps !== undefined) body.fps = options.fps;
+    if (options.media !== undefined) body.media = options.media;
+    if (options.template !== undefined) {
+      body.template =
+        typeof options.template === "string" ? { id: options.template } : options.template;
+    }
+    if (options.placeMedia !== undefined) body.placeMedia = options.placeMedia;
+
+    return this.request<VideoProject>({
+      method: "POST",
+      path: "/v1/video/projects",
+      body,
+      requiresAuth: true,
+      headers: idempotencyHeaders(options.idempotencyKey),
+    });
+  }
+
+  /** List your API-created timeline projects, newest first. */
+  async listVideoProjects(options: { limit?: number } = {}): Promise<ListVideoProjectsResult> {
+    return this.request<ListVideoProjectsResult>({
+      method: "GET",
+      path: "/v1/video/projects",
+      query: { limit: options.limit },
+      requiresAuth: true,
+    });
+  }
+
+  /** Current state of a project: digest, media, `saveRev`, version history and `editorUrl`. */
+  async getVideoProject(
+    projectId: string,
+    options: { includeDoc?: boolean } = {}
+  ): Promise<VideoProject> {
+    return this.request<VideoProject>({
+      method: "GET",
+      path: `/v1/video/projects/${encodeURIComponent(projectId)}`,
+      query: { include: options.includeDoc ? "doc" : undefined },
+      requiresAuth: true,
+    });
+  }
+
+  /** Delete an API-created project. */
+  async deleteVideoProject(projectId: string): Promise<{ deleted: boolean }> {
+    return this.request<{ deleted: boolean }>({
+      method: "DELETE",
+      path: `/v1/video/projects/${encodeURIComponent(projectId)}`,
+      requiresAuth: true,
+    });
+  }
+
+  /**
+   * Apply up to 40 operations to a project, atomically. A batch with any
+   * violation is rolled back (`rolledBack: true`, HTTP 200, nothing saved).
+   * Pass `expectedSaveRev` to detect concurrent edits: a stale value throws
+   * {@link SaveConflictError} (code `save-conflict`, carrying `currentSaveRev`).
+   * Free of charge.
+   *
+   * @example
+   * ```typescript
+   * const r = await client.applyVideoOps(id, { ops, expectedSaveRev: p.saveRev });
+   * if (r.rolledBack) console.log(r.violations);
+   * ```
+   */
+  async applyVideoOps(projectId: string, options: ApplyVideoOpsOptions): Promise<ApplyOpsResult> {
+    const body: Record<string, unknown> = { ops: options.ops };
+    if (options.dryRun !== undefined) body.dryRun = options.dryRun;
+    if (options.expectedSaveRev !== undefined) body.expectedSaveRev = options.expectedSaveRev;
+    if (options.label !== undefined) body.label = options.label;
+
+    return this.request<ApplyOpsResult>({
+      method: "POST",
+      path: `/v1/video/projects/${encodeURIComponent(projectId)}/ops`,
+      body,
+      requiresAuth: true,
+    });
+  }
+
+  /** The whole digest, or details of specific clips (`clipIds`, at most 10). */
+  async digestVideoProject(
+    projectId: string,
+    options: VideoDigestOptions = {}
+  ): Promise<VideoDigestResult> {
+    const body: Record<string, unknown> = {};
+    if (options.clipIds !== undefined) body.clipIds = options.clipIds;
+    if (options.view !== undefined) body.view = options.view;
+
+    return this.request<VideoDigestResult>({
+      method: "POST",
+      path: `/v1/video/projects/${encodeURIComponent(projectId)}/digest`,
+      body,
+      requiresAuth: true,
+    });
+  }
+
+  /** Lint a project for problems (gaps, overlaps, missing media, ...). Free of charge. */
+  async lintVideoProject(projectId: string, options: VideoLintOptions = {}): Promise<LintResult> {
+    const body: Record<string, unknown> = {};
+    if (options.rules !== undefined) body.rules = options.rules;
+    if (options.severity !== undefined) body.severity = options.severity;
+
+    return this.request<LintResult>({
+      method: "POST",
+      path: `/v1/video/projects/${encodeURIComponent(projectId)}/lint`,
+      body,
+      requiresAuth: true,
+    });
+  }
+
+  /**
+   * Capture frames of the timeline as contact sheets, so an agent can look at
+   * its edit. Asynchronous and billed a flat fee: returns a queued job whose
+   * finished form carries `frames`, `sheets` and `missing`. Pass `wait: true`
+   * to poll until it is done. Give exactly one of `times`, `count`, `cuts`.
+   */
+  async captureVideoProject(projectId: string, options: CaptureVideoOptions): Promise<VideoJob> {
+    const body: Record<string, unknown> = {};
+    if (options.times !== undefined) body.times = options.times;
+    if (options.count !== undefined) body.count = options.count;
+    if (options.cuts !== undefined) body.cuts = options.cuts;
+    if (options.width !== undefined) body.width = options.width;
+    if (options.sheet !== undefined) body.sheet = options.sheet;
+
+    const job = await this.request<VideoJob>({
+      method: "POST",
+      path: `/v1/video/projects/${encodeURIComponent(projectId)}/capture`,
+      body,
+      requiresAuth: true,
+      headers: idempotencyHeaders(options.idempotencyKey),
+    });
+    if (!options.wait) return job;
+    return this.waitForVideoJob(job.jobId, { maxWaitMs: options.maxWaitMs });
+  }
+
+  /**
+   * Render a project to a video file. Billed per output minute; a failed
+   * render is refunded automatically (`refunded` on the failed job). Returns
+   * the queued job, or with `wait: true` the finished one (`outputUrl`); a
+   * failed render then throws {@link JobFailedError} with the job's `reason`
+   * as its `code`.
+   */
+  async renderVideoProject(projectId: string, options: RenderVideoOptions = {}): Promise<VideoJob> {
+    const body: Record<string, unknown> = {};
+    for (const key of [
+      "format",
+      "codec",
+      "quality",
+      "resolution",
+      "fps",
+      "bitrate",
+      "range",
+      "contentCredentials",
+      "contentAiDeclared",
+    ] as const) {
+      if (options[key] !== undefined) body[key] = options[key];
+    }
+
+    const job = await this.request<VideoJob>({
+      method: "POST",
+      path: `/v1/video/projects/${encodeURIComponent(projectId)}/render`,
+      body,
+      requiresAuth: true,
+      headers: idempotencyHeaders(options.idempotencyKey),
+    });
+    if (!options.wait) return job;
+    return this.waitForVideoJob(job.jobId, {
+      intervalMs: options.intervalMs,
+      maxWaitMs: options.maxWaitMs,
+    });
+  }
+
+  /**
+   * Start a server-side Auto-Edit on a project. Returns the queued job; with
+   * `wait: true` the finished one, whose `report` says what was done and
+   * skipped. With `autoApply: false` the result stays a draft until
+   * {@link applyVideoAutoEdit}.
+   */
+  async autoEditVideoProject(projectId: string, options: AutoEditOptions = {}): Promise<VideoJob> {
+    const body: Record<string, unknown> = {};
+    for (const key of [
+      "style",
+      "toggles",
+      "language",
+      "aspect",
+      "aiBudgetUsd",
+      "autoApply",
+      "mode",
+    ] as const) {
+      if (options[key] !== undefined) body[key] = options[key];
+    }
+
+    const job = await this.request<VideoJob>({
+      method: "POST",
+      path: `/v1/video/projects/${encodeURIComponent(projectId)}/auto-edit`,
+      body,
+      requiresAuth: true,
+      headers: idempotencyHeaders(options.idempotencyKey),
+    });
+    if (!options.wait) return job;
+    return this.waitForVideoJob(job.jobId, { maxWaitMs: options.maxWaitMs });
+  }
+
+  /** Commit the draft of an Auto-Edit job that ran with `autoApply: false`. */
+  async applyVideoAutoEdit(projectId: string, jobId: string): Promise<VideoJob> {
+    return this.request<VideoJob>({
+      method: "POST",
+      path: `/v1/video/projects/${encodeURIComponent(projectId)}/auto-edit/${encodeURIComponent(jobId)}/apply`,
+      body: {},
+      requiresAuth: true,
+    });
+  }
+
+  /** Current state of a render, capture or auto-edit job. */
+  async getVideoJob(jobId: string): Promise<VideoJob> {
+    return this.request<VideoJob>({
+      method: "GET",
+      path: `/v1/video/jobs/${encodeURIComponent(jobId)}`,
+      requiresAuth: true,
+    });
+  }
+
+  /**
+   * Poll a render / capture / auto-edit job until it completes.
+   *
+   * @throws {@link JobFailedError} when the job fails or is cancelled (its
+   *   `code` is the job's `reason` when it has one, else `job_failed`;
+   *   `details.refunded` says whether the charge was returned)
+   * @throws {@link JobTimeoutError} after `maxWaitMs` (the job keeps running)
+   */
+  async waitForVideoJob(jobId: string, options: WaitForVideoJobOptions = {}): Promise<VideoJob> {
+    const intervalMs = options.intervalMs ?? 3_000;
+    const maxWait = options.maxWaitMs ?? 1_800_000;
+    const startTime = Date.now();
+
+    while (true) {
+      const job = await this.getVideoJob(jobId);
+
+      options.onProgress?.(job);
+
+      if (job.status === "completed") return job;
+
+      if (job.status === "failed" || job.status === "cancelled") {
+        throw new JobFailedError(
+          jobId,
+          job.error ?? `Video job ${jobId} ${job.status}`,
+          job.reason ?? "job_failed",
+          { status: job.status, refunded: job.refunded }
+        );
+      }
+
+      if (Date.now() - startTime + intervalMs >= maxWait) {
+        throw new JobTimeoutError(
+          jobId,
+          `Video job ${jobId} timed out after ${Math.round(maxWait / 1000)}s`
+        );
+      }
+
+      await this.sleep(intervalMs);
+    }
+  }
+
+  /** JSON Schema of the operations accepted by {@link applyVideoOps}, with notes and limits. */
+  async getVideoOpsCatalog(): Promise<VideoOpsCatalog> {
+    return this.request<VideoOpsCatalog>({
+      method: "GET",
+      path: "/v1/video/ops/catalog",
+      requiresAuth: true,
+    });
+  }
+
+  /** Detect scene cuts in a video (`url`, or `projectId` + `mediaId`). Paid per request. */
+  async detectVideoScenes(options: DetectScenesOptions): Promise<VideoAnalysisResult> {
+    return this.request<VideoAnalysisResult>({
+      method: "POST",
+      path: "/v1/video/detect-scenes",
+      body: options,
+      requiresAuth: true,
+    });
+  }
+
+  /** Detect silent ranges in audio or video. Paid per request. */
+  async detectVideoSilence(options: DetectSilenceOptions): Promise<VideoAnalysisResult> {
+    return this.request<VideoAnalysisResult>({
+      method: "POST",
+      path: "/v1/video/detect-silence",
+      body: options,
+      requiresAuth: true,
+    });
+  }
+
+  /** Detect beats and tempo in audio or video. Paid per request. */
+  async detectVideoBeats(options: DetectBeatsOptions): Promise<VideoAnalysisResult> {
+    return this.request<VideoAnalysisResult>({
+      method: "POST",
+      path: "/v1/video/detect-beats",
+      body: options,
+      requiresAuth: true,
+    });
+  }
+
+  /** Start a transcription job; poll it with {@link getVideoTranscription}. Paid per request. */
+  async transcribeVideo(options: TranscribeVideoOptions): Promise<VideoTranscribeJob> {
+    return this.request<VideoTranscribeJob>({
+      method: "POST",
+      path: "/v1/video/transcribe",
+      body: options,
+      requiresAuth: true,
+    });
+  }
+
+  /** State (and, once `completed`, the result) of a transcription job. */
+  async getVideoTranscription(jobId: string): Promise<VideoTranscribeJob> {
+    return this.request<VideoTranscribeJob>({
+      method: "GET",
+      path: `/v1/video/transcribe/${encodeURIComponent(jobId)}`,
+      requiresAuth: true,
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // VIRTUAL TRY-ON
   // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2600,7 +2977,7 @@ export class FotoHub {
 
         // Don't retry on client errors (4xx) except 429 and 408
         if (response.status >= 400) {
-          const error = await this.handleErrorResponse(response);
+          const error = await this.handleErrorResponse(response, options.path);
 
           // Retry on rate limit and timeout
           if (response.status === 429 || response.status === 408) {
@@ -2614,9 +2991,12 @@ export class FotoHub {
           // report a failure for work that is running and will be charged
           // exactly once. Without a key a 409 is a genuine conflict and falls
           // through to the throw below.
+          // A `save-conflict` is the caller's own stale `expectedSaveRev`, not
+          // an in-flight duplicate: retrying it can never succeed.
           if (
             response.status === 409 &&
             idempotencyKey &&
+            error.code !== "save-conflict" &&
             attempt < this.maxRetries
           ) {
             lastError = error;
@@ -2714,7 +3094,10 @@ export class FotoHub {
     return headers;
   }
 
-  private async handleErrorResponse(response: Response): Promise<FotoHubError> {
+  private async handleErrorResponse(
+    response: Response,
+    path: string = ""
+  ): Promise<FotoHubError> {
     let body: unknown;
 
     try {
@@ -2726,6 +3109,11 @@ export class FotoHub {
     const error = this.extractError(body);
     const message = error?.message ?? response.statusText;
     const code = error?.code ?? `http_${response.status}`;
+    // Server-defined code on timeline routes (see TIMELINE_ERROR_PATH).
+    const tcode =
+      TIMELINE_ERROR_PATH.test(path) && error?.code && error.code !== "unknown"
+        ? error.code
+        : undefined;
 
     switch (response.status) {
       case 401:
@@ -2770,27 +3158,40 @@ export class FotoHub {
           // Only from a pre-cutover server. A current one never sends these.
           creditsRequired: num("credits_required", "creditsRequired"),
           creditsAvailable: num("credits_available", "creditsAvailable"),
-        });
+        }, tcode);
       }
       case 403:
-        return new PermissionError(message);
+        return new PermissionError(message, tcode);
       case 404:
-        return new NotFoundError(message);
+        return new NotFoundError(message, tcode, tcode ? error?.details : undefined);
+      case 409:
+        if (tcode === "save-conflict") {
+          return new SaveConflictError(message, error?.details);
+        }
+        return new FotoHubError(message, code, 409, error?.details);
       case 422:
         return new ValidationError(
           message,
-          error?.details as Record<string, string[]> | undefined
+          error?.details as Record<string, string[]> | undefined,
+          tcode
         );
       case 429: {
         const retryAfter = response.headers.get("retry-after");
         return new RateLimitError(
           message,
-          retryAfter ? parseInt(retryAfter, 10) : undefined
+          retryAfter ? parseInt(retryAfter, 10) : undefined,
+          tcode,
+          tcode ? error?.details : undefined
         );
       }
       default:
         if (response.status >= 500) {
-          return new ServerError(message, response.status);
+          return new ServerError(
+            message,
+            response.status,
+            tcode,
+            tcode ? error?.details : undefined
+          );
         }
         return new FotoHubError(message, code, response.status, error?.details);
     }

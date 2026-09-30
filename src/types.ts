@@ -1,3 +1,4 @@
+import type { OpIntent } from "./ops.generated.js";
 // ─── Client Configuration ────────────────────────────────────────────────────
 
 export interface FotoHubConfig {
@@ -2018,4 +2019,321 @@ export interface RequestOptions {
   timeout?: number;
   /** Whether to parse response as stream */
   stream?: boolean;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VIDEO TIMELINE API  (/v1/video/projects, /v1/video/jobs, /v1/video/ops)
+// Wire format is camelCase in both directions.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Aspect ratios a timeline project can be created with. */
+export type VideoProjectAspect = "16:9" | "9:16" | "1:1" | "4:5" | "4:3";
+
+/**
+ * One media item to bring into a new project. Give exactly one of `url`
+ * (public HTTPS, re-hosted into your storage) or `storagePath`
+ * (`<bucket>/<userId>/...`, your own storage).
+ */
+export interface VideoMediaInput {
+  url?: string;
+  storagePath?: string;
+  kind?: "video" | "audio" | "image";
+  name?: string;
+}
+
+export interface CreateVideoProjectOptions {
+  title?: string;
+  aspect?: VideoProjectAspect;
+  fps?: number;
+  media?: VideoMediaInput[];
+  /** Template id, or `{ id }`. Media then fill the template's slots. */
+  template?: string | { id: string };
+  /** `sequence` (default) lays media out one after another; `none` only registers them. */
+  placeMedia?: "sequence" | "none";
+  /** Overrides the auto-generated `X-Idempotency-Key` (stable across process restarts). */
+  idempotencyKey?: string;
+}
+
+/** A media item registered in a project. */
+export interface VideoProjectMedia {
+  assetId: string;
+  kind: "video" | "audio" | "image" | (string & {});
+  name?: string;
+  src?: string;
+  storagePath?: string;
+  /** Seconds. */
+  duration?: number;
+  durationTicks?: number;
+  hasAudio?: boolean;
+  width?: number;
+  height?: number;
+}
+
+/** Compact description of the timeline (tracks, clips, markers). Shape follows the editor document. */
+export type VideoProjectDigest = Record<string, unknown>;
+
+export interface VideoProjectVersion {
+  id: string;
+  createdAt: string;
+  label?: string;
+}
+
+export interface VideoProject {
+  projectId: string;
+  /** Bumps on every saved change; pass it back as `expectedSaveRev` for optimistic concurrency. */
+  saveRev: number;
+  ticksPerSecond: number;
+  digest: VideoProjectDigest;
+  media: VideoProjectMedia[];
+  /** Open the project in the editor. */
+  editorUrl: string;
+  title?: string;
+  updatedAt?: string;
+  versions?: VideoProjectVersion[];
+  /** Media that `placeMedia: "sequence"` could not place (create only). */
+  unplacedMedia?: Array<{ assetId: string; reason: string }>;
+  /** Full editor document (only when requested). */
+  doc?: Record<string, unknown>;
+}
+
+export interface VideoProjectSummary {
+  projectId: string;
+  title?: string;
+  updatedAt?: string;
+  editorUrl: string;
+}
+
+export interface ListVideoProjectsResult {
+  projects: VideoProjectSummary[];
+}
+
+export interface ApplyVideoOpsOptions {
+  /** 1 to 40 operations, applied atomically: any violation rolls the whole batch back. */
+  ops: OpIntent[];
+  /** Validate and preview without saving. */
+  dryRun?: boolean;
+  /** Reject with `save-conflict` (409) when the project changed since you read it. */
+  expectedSaveRev?: number;
+  /** Version label recorded in the project history. */
+  label?: string;
+}
+
+export interface VideoOpResult {
+  ok: boolean;
+  [key: string]: unknown;
+}
+
+export interface ApplyOpsResult {
+  ok: boolean;
+  /** True when a violation aborted the batch; the document and `saveRev` are unchanged. */
+  rolledBack: boolean;
+  violations: unknown[];
+  saveRev: number;
+  results: VideoOpResult[];
+  summary?: unknown;
+  accepted: number;
+  rejected: number;
+  refs?: unknown;
+  dryRun?: boolean;
+  digestDelta?: unknown;
+  versionSaved?: unknown;
+  warnings?: unknown[];
+}
+
+export interface VideoDigestOptions {
+  /** Return details for these clips (1 to 10). */
+  clipIds?: string[];
+  view?: "digest" | "clips";
+}
+
+export interface VideoDigestResult {
+  saveRev: number;
+  digest?: VideoProjectDigest;
+  clips?: Array<Record<string, unknown>>;
+  missing?: string[];
+}
+
+export interface VideoLintOptions {
+  rules?: string[];
+  severity?: "error" | "warn" | "info";
+}
+
+export interface VideoLintFinding {
+  rule: string;
+  severity: "error" | "warn" | "info";
+  clipId?: string;
+  clipIds?: string[];
+  at?: number;
+  atSeconds?: number;
+  end?: number;
+  endSeconds?: number;
+  message: string;
+  params?: Record<string, string | number>;
+  fix?: "relink" | "trim-to-content" | "none";
+  suggestion?: string;
+}
+
+export interface LintResult {
+  findings: VideoLintFinding[];
+  counts: { error: number; warn: number; info: number };
+  available: boolean;
+}
+
+/** Pick exactly one of `times`, `count` or `cuts: true`. */
+export interface CaptureVideoOptions {
+  /** Timeline seconds, at most 24. */
+  times?: number[];
+  count?: number;
+  cuts?: boolean;
+  width?: number;
+  sheet?: { maxCells?: number; maxEdge?: number };
+  idempotencyKey?: string;
+  /** Poll {@link FotoHub.waitForVideoJob} and return the finished job. Default false. */
+  wait?: boolean;
+  maxWaitMs?: number;
+}
+
+export interface CaptureFrame {
+  index: number;
+  /** Requested time. */
+  t: number;
+  /** Time of the frame actually extracted. */
+  actualT: number;
+  label: string;
+  /** Index into `sheets`. */
+  sheet: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface CaptureSheet {
+  url: string;
+  width: number;
+  height: number;
+}
+
+/** A `VideoJob` of `kind: "capture"` once `status` is `completed`. */
+export interface CaptureResult {
+  frames: CaptureFrame[];
+  sheets: CaptureSheet[];
+  missing: Array<{ index: number; t: number }>;
+}
+
+export interface RenderVideoOptions {
+  format?: string;
+  codec?: string;
+  quality?: string;
+  resolution?: string;
+  fps?: number;
+  bitrate?: string;
+  range?: { in: number; out: number };
+  contentCredentials?: boolean;
+  contentAiDeclared?: boolean;
+  idempotencyKey?: string;
+  /** Poll {@link FotoHub.waitForVideoJob} until the render finishes. Default false. */
+  wait?: boolean;
+  /** Give-up time when `wait` is true. Default 1 800 000 (30 min). */
+  maxWaitMs?: number;
+  /** Polling interval when `wait` is true. Default 3 000. */
+  intervalMs?: number;
+}
+
+export type VideoJobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+
+export interface VideoJob extends Partial<CaptureResult> {
+  jobId: string;
+  status: VideoJobStatus;
+  kind?: "render" | "capture" | "auto_edit" | (string & {});
+  projectId?: string;
+  /** 0 to 100. */
+  progress?: number;
+  outputUrl?: string;
+  outputSize?: number;
+  error?: string;
+  reason?: string;
+  warnings?: unknown[];
+  queuePosition?: number;
+  /** Set on failed / cancelled jobs: whether the charge was returned. */
+  refunded?: boolean;
+  billedMinutes?: number;
+  saveRev?: number;
+  times?: number[];
+  width?: number;
+  height?: number;
+  /** Auto-edit progress and outcome. */
+  stages?: unknown;
+  report?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface WaitForVideoJobOptions {
+  /** Polling interval in milliseconds. Default 3 000. */
+  intervalMs?: number;
+  /** Maximum time to wait in milliseconds. Default 1 800 000 (30 min). */
+  maxWaitMs?: number;
+  /** Called after every poll. */
+  onProgress?: (job: VideoJob) => void;
+}
+
+export interface AutoEditOptions {
+  style?: "viral" | "podcast" | "explainer" | "storytelling" | "captions-only";
+  toggles?: Record<string, unknown>;
+  language?: string;
+  aspect?: VideoProjectAspect;
+  /** Ceiling (USD, 0 to 50) for AI generations; 0 uses stock only. */
+  aiBudgetUsd?: number;
+  /** Commit the result to the project (default true); false leaves a draft to approve. */
+  autoApply?: boolean;
+  mode?: "auto_edit" | "cut";
+  idempotencyKey?: string;
+  wait?: boolean;
+  maxWaitMs?: number;
+}
+
+export interface VideoOpsCatalog {
+  /** JSON Schema of the `ops` body. */
+  schema: Record<string, unknown>;
+  notes: string;
+  ticksPerSecond: number;
+  maxOps: number;
+}
+
+export interface VideoSourceRef {
+  /** Public HTTPS URL. Give this, or `projectId` + `mediaId`. */
+  url?: string;
+  projectId?: string;
+  mediaId?: string;
+}
+
+export interface DetectScenesOptions extends VideoSourceRef {
+  threshold?: number;
+  minSceneDuration?: number;
+}
+
+export interface DetectSilenceOptions extends VideoSourceRef {
+  noiseFloorDb?: number;
+  minSilenceDuration?: number;
+}
+
+export type DetectBeatsOptions = VideoSourceRef;
+
+export interface TranscribeVideoOptions extends VideoSourceRef {
+  language?: string;
+  hotwords?: string[];
+}
+
+/** Billing fields the paid analysis routes add to their answers. */
+export type VideoAnalysisResult = Record<string, unknown>;
+
+export interface VideoTranscribeJob {
+  jobId?: string;
+  status: "queued" | "processing" | "completed" | "failed" | (string & {});
+  progress?: number;
+  result?: unknown;
+  errorKind?: string;
+  errorMessage?: string;
+  refunded?: boolean;
+  [key: string]: unknown;
 }

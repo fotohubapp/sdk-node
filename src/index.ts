@@ -56,6 +56,7 @@ export {
   ServerError,
   JobFailedError,
   JobTimeoutError,
+  SaveConflictError,
   WebhookError,
 } from "./errors.js";
 
@@ -218,7 +219,44 @@ export type {
   GabrielRecommendation,
   TranslateOptions,
   TranslateResult,
+  CreateVideoProjectOptions,
+  VideoProjectAspect,
+  VideoMediaInput,
+  VideoProjectMedia,
+  VideoProjectDigest,
+  VideoProjectVersion,
+  VideoProject,
+  VideoProjectSummary,
+  ListVideoProjectsResult,
+  ApplyVideoOpsOptions,
+  VideoOpResult,
+  ApplyOpsResult,
+  VideoDigestOptions,
+  VideoDigestResult,
+  VideoLintOptions,
+  VideoLintFinding,
+  LintResult,
+  CaptureVideoOptions,
+  CaptureFrame,
+  CaptureSheet,
+  CaptureResult,
+  RenderVideoOptions,
+  VideoJobStatus,
+  VideoJob,
+  WaitForVideoJobOptions,
+  AutoEditOptions,
+  VideoOpsCatalog,
+  VideoSourceRef,
+  DetectScenesOptions,
+  DetectSilenceOptions,
+  DetectBeatsOptions,
+  TranscribeVideoOptions,
+  VideoAnalysisResult,
+  VideoTranscribeJob,
 } from "./types.js";
+
+// Types — Video timeline operations (generated from the operation catalog)
+export type { OpIntent } from "./ops.generated.js";
 
 // Types — Models
 export type { Model } from "./types.js";

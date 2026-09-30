@@ -51,9 +51,12 @@
     "build:cjs": "tsc -p tsconfig.cjs.json",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run clean && npm run build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "gen:ops": "node scripts/gen-ops.mjs",
+    "test": "npm run build && node --test test/*.test.mjs"
   },
   "devDependencies": {
+    "json-schema-to-typescript": "^16.0.0",
     "typescript": "^5.4.0"
   }
 }
