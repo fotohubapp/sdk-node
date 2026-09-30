@@ -191,6 +191,23 @@ test("waitForVideoJob: failed job throws JobFailedError whose code is the job re
   );
 });
 
+test("waitForVideoJob: failed Auto-Edit job throws a readable error with code, currentSaveRev and draftId", async () => {
+  const { client } = harness([json(200, { jobId: JOB, status: "failed", kind: "auto_edit", error: { code: "save-conflict", message: "project changed during the run" }, currentSaveRev: 9, draftId: "d-1", refunded: false })]);
+  await assert.rejects(
+    () => client.waitForVideoJob(JOB),
+    (e) => {
+      assert.ok(e instanceof JobFailedError);
+      assert.equal(e.code, "save-conflict");
+      assert.equal(e.message, "project changed during the run");
+      assert.ok(!e.message.includes("[object"));
+      assert.equal(e.details.currentSaveRev, 9);
+      assert.equal(e.details.draftId, "d-1");
+      assert.deepEqual(e.details.error, { code: "save-conflict", message: "project changed during the run" });
+      return true;
+    }
+  );
+});
+
 test("waitForVideoJob: cancelled without reason falls back to job_failed", async () => {
   const { client } = harness([json(200, { jobId: JOB, status: "cancelled" })]);
   await assert.rejects(() => client.waitForVideoJob(JOB), (e) => e instanceof JobFailedError && e.code === "job_failed");

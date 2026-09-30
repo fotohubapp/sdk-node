@@ -2194,7 +2194,7 @@ export interface LintResult {
   findings: VideoLintFinding[];
   counts: { error: number; warn: number; info: number };
   available: boolean;
-  /** e.g. `lint-unavailable` when the checker is not deployed (then `available` is false). */
+  /** Non-fatal notes from the checker. */
   warnings?: string[];
 }
 
@@ -2288,8 +2288,13 @@ export interface VideoJob extends Partial<CaptureResult> {
   progress?: number;
   outputUrl?: string;
   outputSize?: number;
-  error?: string;
+  /** A string for render / capture jobs; `{code, message}` for Auto-Edit jobs. */
+  error?: string | { code: string; message?: string };
   reason?: string;
+  /** Auto-Edit `save-conflict`: project revision now (apply with `expectedSaveRev` set to it). */
+  currentSaveRev?: number;
+  /** Auto-Edit: the kept draft, when there is one. */
+  draftId?: string;
   warnings?: unknown[];
   queuePosition?: number;
   /** Set on failed / cancelled jobs: whether the charge was returned. */
@@ -2328,7 +2333,7 @@ export interface AutoEditUsage {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   outputTokens: number;
-  /** True once the AI usage of the finished run has been settled. */
+  /** Stays `false` while the base fee covers the run's AI tokens (the default): tokens are metered, not billed. */
   billed: boolean;
   units?: number;
   chargedUsd?: number;

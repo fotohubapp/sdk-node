@@ -2205,11 +2205,17 @@ export class FotoHub {
   }
 
   /**
-   * Start a server-side Auto-Edit on a project. Paid: a base fee up front plus
-   * the AI usage of the run. Returns the running job (202); with `wait: true`
-   * the finished one, whose `stages`, `report` and `usage` say what was done,
-   * skipped and spent. With `autoApply: false` the result stays a draft for
-   * about 30 minutes until {@link applyVideoAutoEdit}.
+   * Start a server-side Auto-Edit on a project. Paid: ONE base fee per run,
+   * charged up front, which covers the AI assistant's work (AI tokens are not
+   * billed separately); media the run generates (B-roll, graphics, audio) is
+   * billed per item. Refunds: a failed run is refunded; a run that ended in
+   * `save-conflict` keeps its draft and can still be applied (see
+   * {@link applyVideoAutoEdit}) within about 70 minutes of the run start,
+   * otherwise it is refunded; an applied run is never refunded. Returns the
+   * running job (202); with `wait: true` the finished one, whose `stages`,
+   * `report` and `usage` say what was done, skipped and spent. With
+   * `autoApply: false` the result stays a draft (30 minutes, at most 60
+   * minutes from the start) until {@link applyVideoAutoEdit}.
    */
   async autoEditVideoProject(projectId: string, options: AutoEditOptions = {}): Promise<AutoEditJob> {
     const body: Record<string, unknown> = {};
@@ -2242,9 +2248,14 @@ export class FotoHub {
 
   /**
    * Commit the draft of a finished Auto-Edit job that ran with
-   * `autoApply: false`. No extra charge. Rejects with `save-conflict` (409,
-   * `currentSaveRev`) when the project moved past `expectedSaveRev` (default:
-   * the revision the run started from); the draft is kept. A draft is used up
+   * `autoApply: false`, or that ended in `save-conflict`. No extra charge.
+   * When the project moved past `expectedSaveRev` (default: the revision the
+   * run started from) the request is rejected with `save-conflict` (409,
+   * `currentSaveRev`); the draft is kept. To apply it anyway, pass
+   * `expectedSaveRev: currentSaveRev`: the service then REBASES the draft
+   * onto the current project, and answers 409 `rebase-conflict` when it can
+   * no longer be replayed. Omitting `expectedSaveRev` on such a draft is a
+   * 422. A draft is used up
    * by the commit, and a second apply (or an expired draft) answers 404
    * `draft-not-found`.
    */
@@ -2275,9 +2286,10 @@ export class FotoHub {
   /**
    * Poll a render / capture / auto-edit job until it completes.
    *
-   * @throws {@link JobFailedError} when the job fails or is cancelled (its
-   *   `code` is the job's `reason` when it has one, else `job_failed`;
-   *   `details.refunded` says whether the charge was returned)
+   * @throws {@link JobFailedError} when the job fails or is cancelled. Its
+   *   `code` is the job's `error.code` (Auto-Edit) or `reason` when it has one,
+   *   else `job_failed`; `details` carries `refunded`, and for Auto-Edit
+   *   `currentSaveRev`, `draftId` and the raw `error` (`{code, message}`)
    * @throws {@link JobTimeoutError} after `maxWaitMs` (the job keeps running)
    */
   async waitForVideoJob(jobId: string, options: WaitForVideoJobOptions = {}): Promise<VideoJob> {
@@ -2293,11 +2305,20 @@ export class FotoHub {
       if (job.status === "completed") return job;
 
       if (job.status === "failed" || job.status === "cancelled") {
+        const err = job.error;
+        const detail = typeof err === "string" ? undefined : err;
+        const message = typeof err === "string" ? err : err?.message ?? err?.code;
         throw new JobFailedError(
           jobId,
-          job.error ?? `Video job ${jobId} ${job.status}`,
-          job.reason ?? "job_failed",
-          { status: job.status, refunded: job.refunded }
+          message ?? `Video job ${jobId} ${job.status}`,
+          detail?.code ?? job.reason ?? "job_failed",
+          {
+            status: job.status,
+            refunded: job.refunded,
+            ...(job.currentSaveRev !== undefined && { currentSaveRev: job.currentSaveRev }),
+            ...(job.draftId !== undefined && { draftId: job.draftId }),
+            ...(err !== undefined && { error: err }),
+          }
         );
       }
 

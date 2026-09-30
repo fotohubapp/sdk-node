@@ -1,7 +1,7 @@
 {
   "name": "fotohub",
   "version": "1.11.0",
-  "description": "Official TypeScript SDK for the FOTOhub AI Platform \u2014 image, video, music, 3D generation, chat/LLM, translation, and storage.",
+  "description": "Official TypeScript SDK for the FOTOhub AI Platform — image, video, music, 3D generation, chat/LLM, translation, and storage.",
   "author": "FOTOhub <dev@fotohub.app>",
   "license": "MIT",
   "homepage": "https://fotohub.app",
@@ -56,6 +56,7 @@
     "test": "npm run build && node --test test/*.test.mjs"
   },
   "devDependencies": {
+    "@types/node": "^20.19.43",
     "json-schema-to-typescript": "^16.0.0",
     "typescript": "^5.4.0"
   }
