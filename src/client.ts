@@ -2209,9 +2209,10 @@ export class FotoHub {
    * charged up front, which covers the AI assistant's work (AI tokens are not
    * billed separately); media the run generates (B-roll, graphics, audio) is
    * billed per item. Refunds: a failed run is refunded; a run that ended in
-   * `save-conflict` keeps its draft and can still be applied (see
-   * {@link applyVideoAutoEdit}) within about 70 minutes of the run start,
-   * otherwise it is refunded; an applied run is never refunded. Returns the
+   * `save-conflict` keeps its draft, which can be applied (see
+   * {@link applyVideoAutoEdit}) only while the draft lives (at most 60 minutes
+   * from the run start); a run not applied by about 70 minutes is refunded.
+   * An applied run is never refunded. Returns the
    * running job (202); with `wait: true` the finished one, whose `stages`,
    * `report` and `usage` say what was done, skipped and spent. With
    * `autoApply: false` the result stays a draft (30 minutes, at most 60
