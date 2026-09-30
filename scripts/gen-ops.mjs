@@ -1,16 +1,21 @@
 #!/usr/bin/env node
 // Generates src/ops.generated.ts (OpIntent & friends) from the timeline operation catalog.
-//   npm run gen:ops                      -> reads the default catalog path below
+// The schema is the timeline operation catalog (`ops.schema.json`, the same document
+// `getVideoOpsCatalog()` serves as `schema`). Pass its path explicitly:
 //   npm run gen:ops -- path/to/ops.schema.json
+//   OPS_SCHEMA=path/to/ops.schema.json npm run gen:ops
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { compile } from "json-schema-to-typescript";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const DEFAULT_SCHEMA =
-  "/home/ubuntu/fotohub/fotohubv22/.claude/worktrees/video-ds-c/server/timeline-service/catalog/ops.schema.json";
-const schemaPath = resolve(process.argv[2] ?? process.env.OPS_SCHEMA ?? DEFAULT_SCHEMA);
+const schemaArg = process.argv[2] ?? process.env.OPS_SCHEMA;
+if (!schemaArg) {
+  console.error("usage: npm run gen:ops -- <path/to/ops.schema.json>  (or set OPS_SCHEMA)");
+  process.exit(1);
+}
+const schemaPath = resolve(schemaArg);
 const out = resolve(here, "../src/ops.generated.ts");
 
 const schema = JSON.parse(await readFile(schemaPath, "utf8"));

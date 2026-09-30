@@ -2019,6 +2019,12 @@ export interface RequestOptions {
   timeout?: number;
   /** Whether to parse response as stream */
   stream?: boolean;
+  /**
+   * Set to `false` for a write that is not safe to replay: a 5xx, timeout or
+   * network failure is then thrown at once instead of retried (429 is still
+   * retried: the request was refused before it ran). Default true.
+   */
+  retryAmbiguous?: boolean;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2174,9 +2180,12 @@ export interface VideoLintFinding {
 }
 
 export interface LintResult {
+  saveRev?: number;
   findings: VideoLintFinding[];
   counts: { error: number; warn: number; info: number };
   available: boolean;
+  /** e.g. `lint-unavailable` when the checker is not deployed (then `available` is false). */
+  warnings?: string[];
 }
 
 /** Pick exactly one of `times`, `count` or `cuts: true`. */
@@ -2191,6 +2200,8 @@ export interface CaptureVideoOptions {
   /** Poll {@link FotoHub.waitForVideoJob} and return the finished job. Default false. */
   wait?: boolean;
   maxWaitMs?: number;
+  /** Polling interval when `wait` is true. Default 3 000. */
+  intervalMs?: number;
 }
 
 export interface CaptureFrame {
@@ -2221,11 +2232,16 @@ export interface CaptureResult {
   missing: Array<{ index: number; t: number }>;
 }
 
+/** Output containers; matched case-insensitively (`mp4`, `MP4`, ...). */
+export type RenderFormat = "mp4" | "webm" | "mov" | "gif" | "mp3" | "wav" | (string & {});
+
 export interface RenderVideoOptions {
-  format?: string;
-  codec?: string;
-  quality?: string;
-  resolution?: string;
+  /** Case-insensitive. */
+  format?: RenderFormat;
+  codec?: "h264" | "h265" | "prores" | (string & {});
+  /** `draft` is the lowest quality (same as `standard` in the final render). */
+  quality?: "draft" | "standard" | "high" | "ultra" | (string & {});
+  resolution?: "720p" | "1080p" | "2k" | "4k" | (string & {});
   fps?: number;
   bitrate?: string;
   range?: { in: number; out: number };
@@ -2238,6 +2254,17 @@ export interface RenderVideoOptions {
   maxWaitMs?: number;
   /** Polling interval when `wait` is true. Default 3 000. */
   intervalMs?: number;
+}
+
+export interface VideoJobBilling {
+  cost_usd: number;
+  balance_usd?: number | null;
+  currency: string;
+  /** `wallet`, `credits` or `credits+wallet`. */
+  method: string;
+  model?: string;
+  credits_used?: number;
+  credits_remaining?: number;
 }
 
 export type VideoJobStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
@@ -2258,6 +2285,14 @@ export interface VideoJob extends Partial<CaptureResult> {
   /** Set on failed / cancelled jobs: whether the charge was returned. */
   refunded?: boolean;
   billedMinutes?: number;
+  /** Charge summary on the queued (202) answer of capture / render. */
+  cost_usd?: number;
+  currency?: string;
+  billing?: VideoJobBilling;
+  /** Credits drawn, when the charge used credits (OAuth sessions). */
+  chargedCredits?: number;
+  /** Cut points found (capture with `cuts`). */
+  cuts?: unknown;
   saveRev?: number;
   times?: number[];
   width?: number;
@@ -2290,6 +2325,8 @@ export interface AutoEditOptions {
   idempotencyKey?: string;
   wait?: boolean;
   maxWaitMs?: number;
+  /** Polling interval when `wait` is true. Default 3 000. */
+  intervalMs?: number;
 }
 
 export interface VideoOpsCatalog {
@@ -2332,8 +2369,9 @@ export interface VideoTranscribeJob {
   status: "queued" | "processing" | "completed" | "failed" | (string & {});
   progress?: number;
   result?: unknown;
-  errorKind?: string;
-  errorMessage?: string;
+  /** `null` (not absent) on jobs that have not failed. */
+  errorKind?: string | null;
+  errorMessage?: string | null;
   refunded?: boolean;
   [key: string]: unknown;
 }

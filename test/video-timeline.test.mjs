@@ -292,3 +292,101 @@ test("autoEditVideoProject: POST .../auto-edit with camelCase options, wait poll
   await client.applyVideoAutoEdit(ID, JOB);
   assert.equal(calls.at(-1).url, `/v1/video/projects/${ID}/auto-edit/${JOB}/apply`);
 });
+
+// ─── Fix round 1: retry safety, explicit-key wait, 409 codes, 422 details ─────
+
+const OPS = [{ op: "insertGap" }];
+const err = (status, code, details) => json(status, { error: { code, message: code, details } });
+
+test("applyVideoOps without expectedSaveRev is never retried on 5xx", async () => {
+  const { client, calls } = harness(
+    [err(504, "timeline-timeout", { retryable: true }), json(200, { ok: true, saveRev: 3 })],
+    { maxRetries: 3 }
+  );
+  await assert.rejects(() => client.applyVideoOps(ID, { ops: OPS }), (e) => e.statusCode === 504);
+  assert.equal(calls.length, 1);
+});
+
+test("applyVideoOps without expectedSaveRev is not retried on a network failure or timeout", async () => {
+  for (const failure of [new TypeError("fetch failed"), new DOMException("aborted", "AbortError")]) {
+    const { client, calls } = harness(
+      [() => Promise.reject(failure), json(200, { ok: true, saveRev: 3 })],
+      { maxRetries: 3 }
+    );
+    await assert.rejects(() => client.applyVideoOps(ID, { ops: OPS }));
+    assert.equal(calls.length, 1);
+  }
+});
+
+test("applyVideoOps with expectedSaveRev is retried on 5xx (a replay would 409, not double-apply)", async () => {
+  const { client, calls } = harness(
+    [err(504, "timeline-timeout"), json(200, { ok: true, saveRev: 4 })],
+    { maxRetries: 3 }
+  );
+  const out = await client.applyVideoOps(ID, { ops: OPS, expectedSaveRev: 3 });
+  assert.equal(out.saveRev, 4);
+  assert.equal(calls.length, 2);
+});
+
+test("applyVideoOps still retries 429 without expectedSaveRev (refused before it ran)", async () => {
+  const { client, calls } = harness(
+    [err(429, "rate-limited"), json(200, { ok: true, saveRev: 4 })],
+    { maxRetries: 3 }
+  );
+  await client.applyVideoOps(ID, { ops: OPS });
+  assert.equal(calls.length, 2);
+});
+
+test("a caller-supplied idempotencyKey still waits out 409 idempotency-in-progress", async () => {
+  const { client, calls } = harness(
+    [err(409, "idempotency-in-progress"), err(409, "idempotency-in-progress"), json(202, { jobId: JOB, status: "queued" })],
+    { maxRetries: 3 }
+  );
+  const job = await client.renderVideoProject(ID, { idempotencyKey: "k-stable" });
+  assert.equal(job.jobId, JOB);
+  assert.equal(calls.length, 3);
+  assert.deepEqual(
+    calls.map((c) => c.headers["X-Idempotency-Key"]),
+    ["k-stable", "k-stable", "k-stable"]
+  );
+});
+
+test("409 project-limit / draft-limit / save-conflict on a keyed call are not retried", async () => {
+  for (const code of ["project-limit", "draft-limit", "save-conflict"]) {
+    const { client, calls } = harness([err(409, code)], { maxRetries: 3 });
+    await assert.rejects(() => client.createVideoProject({ title: "x" }), (e) => e.code === code);
+    assert.equal(calls.length, 1, code);
+  }
+});
+
+test("timeline 422 details are surfaced as `details`, not `fieldErrors`", async () => {
+  const details = { errors: [{ path: "ops[0].op", message: "unknown op" }] };
+  const { client } = harness([err(422, "invalid-ops", details)]);
+  await assert.rejects(
+    () => client.applyVideoOps(ID, { ops: OPS }),
+    (e) => {
+      assert.equal(e.code, "invalid-ops");
+      assert.deepEqual(e.details.errors, details.errors);
+      assert.equal(e.fieldErrors, undefined);
+      assert.equal(e.details.fieldErrors, undefined);
+      return true;
+    }
+  );
+});
+
+test("capture and auto-edit honour intervalMs when waiting", async () => {
+  const sleeps = [];
+  for (const start of [
+    (c) => c.captureVideoProject(ID, { count: 2, wait: true, intervalMs: 77 }),
+    (c) => c.autoEditVideoProject(ID, { wait: true, intervalMs: 77 }),
+  ]) {
+    const { client } = harness([
+      json(202, { jobId: JOB, status: "queued" }),
+      json(200, { jobId: JOB, status: "running" }),
+      json(200, { jobId: JOB, status: "completed" }),
+    ]);
+    client.sleep = async (ms) => void sleeps.push(ms);
+    await start(client);
+  }
+  assert.deepEqual(sleeps, [77, 77]);
+});

@@ -241,6 +241,8 @@ export type {
   CaptureSheet,
   CaptureResult,
   RenderVideoOptions,
+  RenderFormat,
+  VideoJobBilling,
   VideoJobStatus,
   VideoJob,
   WaitForVideoJobOptions,

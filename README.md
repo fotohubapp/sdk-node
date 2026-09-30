@@ -241,6 +241,37 @@ const result = await client.generateSeedance({
 
 ---
 
+### Video Timeline (headless editing)
+
+Create an editor project, edit it with structured operations, look at the result, and render it. Every project has an `editorUrl` that opens the same timeline in the FOTOhub editor.
+
+```typescript
+const project = await client.createVideoProject({
+  title: "Launch teaser",
+  aspect: "9:16",
+  media: [{ url: "https://example.com/clip.mp4" }],
+});
+
+// Up to 40 operations, applied atomically. Pass expectedSaveRev to detect concurrent edits.
+const res = await client.applyVideoOps(project.projectId, {
+  ops: [{ op: "insertClip", /* see client.getVideoOpsCatalog() for every operation */ }],
+  expectedSaveRev: project.saveRev,
+});
+if (res.rolledBack) console.log(res.violations);
+
+const lint = await client.lintVideoProject(project.projectId);      // gaps, overlaps, missing media
+const shots = await client.captureVideoProject(project.projectId, { count: 6, wait: true });
+const render = await client.renderVideoProject(project.projectId, { format: "mp4", resolution: "1080p", wait: true });
+console.log(render.outputUrl);
+```
+
+- `createVideoProject`, `captureVideoProject` and `renderVideoProject` send an idempotency key automatically (or pass `idempotencyKey`); a retry returns the first result instead of a second charge.
+- `applyVideoOps` is **not** retried automatically after a 5xx, timeout or network failure unless you pass `expectedSaveRev`: without it the outcome is unknown and a replay could apply the operations twice. With `expectedSaveRev` a replay is safe, because a batch that did save answers `save-conflict` (`SaveConflictError`, carrying `currentSaveRev`) instead of applying again. After such a failure without a revision, re-read the project with `digestVideoProject` first.
+- Capture and render are asynchronous. Use `wait: true` (with `intervalMs` / `maxWaitMs`), or poll with `waitForVideoJob(jobId)`. A failed job throws `JobFailedError` whose `code` is the job's reason; `details.refunded` says whether the charge was returned.
+- Timeline errors keep the server's code on the thrown error (`save-conflict`, `media-not-found`, `payment-required`, `rate-limited`, ...); validation details are on `error.details`.
+- `autoEditVideoProject` and `applyVideoAutoEdit` are `@experimental` and may change.
+- Types for the operations (`OpIntent`) are generated from the operation catalog; maintainers regenerate them with `npm run gen:ops -- <path/to/ops.schema.json>`.
+
 ### Music Generation
 
 Generate original music from text descriptions.
@@ -670,7 +701,8 @@ The SDK automatically retries failed requests with exponential backoff:
 | 408 Timeout | Yes |
 | 5xx Server Error | Yes |
 | Network errors | Yes |
-| 409 with an idempotency key (your earlier attempt is still in flight) | Yes |
+| 409 `idempotency-in-progress` (your earlier attempt with the same idempotency key is still in flight) | Yes |
+| `POST /v1/video/projects/{id}/ops` after a 5xx, timeout or network failure, without `expectedSaveRev` | No (outcome unknown; a replay could apply twice) |
 | 401, 402, 403, 404, 409, 422 | No |
 
 **Backoff schedule:** 1s, 2s, 4s (capped at 8s)

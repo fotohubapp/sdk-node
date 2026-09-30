@@ -179,6 +179,15 @@ function idempotencyHeaders(key: string | undefined): Record<string, string> | u
   return key ? { [IDEMPOTENCY_HEADER]: key } : undefined;
 }
 
+/** The idempotency key the caller put in `options.headers`, if any. */
+function callerIdempotencyKey(options: RequestOptions): string | undefined {
+  if (!options.headers) return undefined;
+  for (const [name, value] of Object.entries(options.headers)) {
+    if (name.toLowerCase() === IDEMPOTENCY_HEADER.toLowerCase()) return value;
+  }
+  return undefined;
+}
+
 /** Monotonic suffix, so two keys minted in the same millisecond still differ. */
 let idempotencyCounter = 0;
 
@@ -230,17 +239,13 @@ function idempotencyKeyFor(options: RequestOptions): string | undefined {
     return undefined;
   }
   if (options.stream) return undefined;
-  // An explicit key on the request wins. No public method exposes `headers`
-  // today, so this branch is currently only reachable internally — it is here
-  // so that the first method to take custom headers cannot silently clobber a
-  // caller's own key, which would be a de-duplication bug with a charge behind
-  // it. A caller-supplied key can be stable across process restarts; the one
-  // minted below deliberately cannot.
-  if (options.headers) {
-    for (const name of Object.keys(options.headers)) {
-      if (name.toLowerCase() === IDEMPOTENCY_HEADER.toLowerCase()) return undefined;
-    }
-  }
+  // An explicit key on the request wins (the video timeline methods take an
+  // `idempotencyKey` option), so it must never be clobbered by a minted one:
+  // that would be a de-duplication bug with a charge behind it. A
+  // caller-supplied key can be stable across process restarts; the one minted
+  // below deliberately cannot. rawRequest() still treats it as the call's key
+  // for the in-flight wait (see callerIdempotencyKey()).
+  if (callerIdempotencyKey(options)) return undefined;
   const path = options.path;
   if (!IDEMPOTENT_PREFIXES.some((p) => path.startsWith(p))) return undefined;
   if (IDEMPOTENCY_EXCLUDE_PREFIXES.some((p) => path.startsWith(p))) return undefined;
@@ -2070,6 +2075,14 @@ export class FotoHub {
    * {@link SaveConflictError} (code `save-conflict`, carrying `currentSaveRev`).
    * Free of charge.
    *
+   * Retry safety: a 5xx, timeout or network failure leaves it unknown whether
+   * the batch was saved, and replaying it would apply the operations twice. So
+   * without `expectedSaveRev` this call is never retried automatically on such
+   * a failure (the error is thrown; re-read the project with
+   * {@link digestVideoProject} before deciding). With `expectedSaveRev` a
+   * replay is safe, because a batch that did save answers `save-conflict`
+   * instead of applying again, so the client retries as usual.
+   *
    * @example
    * ```typescript
    * const r = await client.applyVideoOps(id, { ops, expectedSaveRev: p.saveRev });
@@ -2087,6 +2100,7 @@ export class FotoHub {
       path: `/v1/video/projects/${encodeURIComponent(projectId)}/ops`,
       body,
       requiresAuth: true,
+      retryAmbiguous: options.expectedSaveRev !== undefined,
     });
   }
 
@@ -2143,7 +2157,10 @@ export class FotoHub {
       headers: idempotencyHeaders(options.idempotencyKey),
     });
     if (!options.wait) return job;
-    return this.waitForVideoJob(job.jobId, { maxWaitMs: options.maxWaitMs });
+    return this.waitForVideoJob(job.jobId, {
+      intervalMs: options.intervalMs,
+      maxWaitMs: options.maxWaitMs,
+    });
   }
 
   /**
@@ -2184,6 +2201,9 @@ export class FotoHub {
   }
 
   /**
+   * @experimental Auto-Edit is not generally available yet; the request and
+   * job shapes may still change.
+   *
    * Start a server-side Auto-Edit on a project. Returns the queued job; with
    * `wait: true` the finished one, whose `report` says what was done and
    * skipped. With `autoApply: false` the result stays a draft until
@@ -2211,10 +2231,17 @@ export class FotoHub {
       headers: idempotencyHeaders(options.idempotencyKey),
     });
     if (!options.wait) return job;
-    return this.waitForVideoJob(job.jobId, { maxWaitMs: options.maxWaitMs });
+    return this.waitForVideoJob(job.jobId, {
+      intervalMs: options.intervalMs,
+      maxWaitMs: options.maxWaitMs,
+    });
   }
 
-  /** Commit the draft of an Auto-Edit job that ran with `autoApply: false`. */
+  /**
+   * @experimental See {@link autoEditVideoProject}.
+   *
+   * Commit the draft of an Auto-Edit job that ran with `autoApply: false`.
+   */
   async applyVideoAutoEdit(projectId: string, jobId: string): Promise<VideoJob> {
     return this.request<VideoJob>({
       method: "POST",
@@ -2948,10 +2975,16 @@ export class FotoHub {
     // One key for this logical call, reused by every retry below, so a timeout
     // or 5xx that arrives after the work already started is replayed instead of
     // charged again. See idempotencyKeyFor().
-    const idempotencyKey = idempotencyKeyFor(options);
-    if (idempotencyKey) {
-      headers[IDEMPOTENCY_HEADER] = idempotencyKey;
+    const mintedKey = idempotencyKeyFor(options);
+    if (mintedKey) {
+      headers[IDEMPOTENCY_HEADER] = mintedKey;
     }
+    // Minted or caller-supplied: either way a 409 in-progress is our own
+    // earlier attempt and is waited out.
+    const idempotencyKey = mintedKey ?? callerIdempotencyKey(options);
+    // A write that must not be replayed blindly (see applyVideoOps) opts out of
+    // retrying anything whose outcome is unknown.
+    const retryAmbiguous = options.retryAmbiguous !== false;
 
     let lastError: Error | undefined;
 
@@ -2991,12 +3024,13 @@ export class FotoHub {
           // report a failure for work that is running and will be charged
           // exactly once. Without a key a 409 is a genuine conflict and falls
           // through to the throw below.
-          // A `save-conflict` is the caller's own stale `expectedSaveRev`, not
-          // an in-flight duplicate: retrying it can never succeed.
+          // Only `idempotency-in-progress` is an in-flight duplicate. Any other
+          // 409 (`save-conflict`, `project-limit`, `draft-limit`, ...) is a
+          // real answer that a retry can never change.
           if (
             response.status === 409 &&
             idempotencyKey &&
-            error.code !== "save-conflict" &&
+            error.code === "idempotency-in-progress" &&
             attempt < this.maxRetries
           ) {
             lastError = error;
@@ -3004,7 +3038,7 @@ export class FotoHub {
           }
 
           // Retry on server errors (5xx)
-          if (response.status >= 500 && attempt < this.maxRetries) {
+          if (response.status >= 500 && retryAmbiguous && attempt < this.maxRetries) {
             lastError = error;
             continue;
           }
@@ -3018,8 +3052,7 @@ export class FotoHub {
           // Already handled — only retry for specific errors
           if (
             error instanceof RateLimitError ||
-            error instanceof ServerError ||
-            error instanceof TimeoutError
+            (retryAmbiguous && (error instanceof ServerError || error instanceof TimeoutError))
           ) {
             lastError = error;
             continue;
@@ -3032,6 +3065,7 @@ export class FotoHub {
           lastError = new TimeoutError(
             `Request to ${options.path} timed out after ${timeout}ms`
           );
+          if (!retryAmbiguous) throw lastError;
           continue;
         }
 
@@ -3041,6 +3075,7 @@ export class FotoHub {
             `Network error: ${error.message}`,
             error
           );
+          if (!retryAmbiguous) throw lastError;
           continue;
         }
 
@@ -3170,6 +3205,11 @@ export class FotoHub {
         }
         return new FotoHubError(message, code, 409, error?.details);
       case 422:
+        // Timeline envelopes carry `details` ({ errors: [...] } or { path }),
+        // which is not a field-name -> messages map: keep it under `details`.
+        if (tcode) {
+          return new ValidationError(message, undefined, tcode, error?.details);
+        }
         return new ValidationError(
           message,
           error?.details as Record<string, string[]> | undefined,
