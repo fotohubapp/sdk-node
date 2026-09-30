@@ -3026,11 +3026,16 @@ export class FotoHub {
           // through to the throw below.
           // Only `idempotency-in-progress` is an in-flight duplicate. Any other
           // 409 (`save-conflict`, `project-limit`, `draft-limit`, ...) is a
-          // real answer that a retry can never change.
+          // real answer that a retry can never change. Outside the timeline
+          // routes api-server answers the in-flight duplicate with a code-less
+          // legacy `{"detail": ...}` 409 (no error envelope), which has no
+          // other meaning on those endpoints, so any keyed 409 there waits.
           if (
             response.status === 409 &&
             idempotencyKey &&
-            error.code === "idempotency-in-progress" &&
+            (TIMELINE_ERROR_PATH.test(options.path)
+              ? error.code === "idempotency-in-progress"
+              : true) &&
             attempt < this.maxRetries
           ) {
             lastError = error;

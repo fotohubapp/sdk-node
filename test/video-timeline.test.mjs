@@ -390,3 +390,34 @@ test("capture and auto-edit honour intervalMs when waiting", async () => {
   }
   assert.deepEqual(sleeps, [77, 77]);
 });
+
+// ─── Fix round 2: legacy (non-timeline) in-flight 409 keeps waiting ───────────
+
+const LEGACY_409 = () =>
+  json(409, {
+    detail:
+      "A request with this X-Idempotency-Key is already in progress. Retry shortly to receive its result; the operation is charged once.",
+  });
+
+test("legacy code-less {detail} 409 on /v1/ai/generate/* is retried with the same key", async () => {
+  const image = { images: [{ url: "https://x/i.png" }] };
+  const { client, calls } = harness([LEGACY_409(), LEGACY_409(), json(200, image)], { maxRetries: 3 });
+  await client.generateImage({ prompt: "cat", model: "seedream-5-0-260128" });
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0].url, "/v1/ai/generate/image");
+  const keys = new Set(calls.map((c) => c.headers["X-Idempotency-Key"] ?? c.headers["x-idempotency-key"]));
+  assert.equal(keys.size, 1);
+  assert.ok([...keys][0]);
+});
+
+test("legacy 409 gives up after maxRetries", async () => {
+  const { client, calls } = harness([LEGACY_409()], { maxRetries: 2 });
+  await assert.rejects(() => client.generateImage({ prompt: "cat", model: "seedream-5-0-260128" }), (e) => e.statusCode === 409);
+  assert.equal(calls.length, 3);
+});
+
+test("video route: only idempotency-in-progress is retried, a code-less 409 is not", async () => {
+  const { client, calls } = harness([LEGACY_409()], { maxRetries: 3 });
+  await assert.rejects(() => client.createVideoProject({ title: "x" }), (e) => e.statusCode === 409);
+  assert.equal(calls.length, 1);
+});

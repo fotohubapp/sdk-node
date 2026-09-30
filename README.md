@@ -701,7 +701,7 @@ The SDK automatically retries failed requests with exponential backoff:
 | 408 Timeout | Yes |
 | 5xx Server Error | Yes |
 | Network errors | Yes |
-| 409 `idempotency-in-progress` (your earlier attempt with the same idempotency key is still in flight) | Yes |
+| 409 `idempotency-in-progress` on video routes, or the legacy `{"detail"}` 409 on other keyed endpoints (your earlier attempt with the same idempotency key is still in flight) | Yes |
 | `POST /v1/video/projects/{id}/ops` after a 5xx, timeout or network failure, without `expectedSaveRev` | No (outcome unknown; a replay could apply twice) |
 | 401, 402, 403, 404, 409, 422 | No |
 

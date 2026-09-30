@@ -2260,7 +2260,7 @@ export interface VideoJobBilling {
   cost_usd: number;
   balance_usd?: number | null;
   currency: string;
-  /** `wallet`, `credits` or `credits+wallet`. */
+  /** `wallet`, `credits`, `credits+wallet`, or `plan` when the plan includes the operation. */
   method: string;
   model?: string;
   credits_used?: number;
