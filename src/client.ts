@@ -1,3 +1,9 @@
+import {
+  CharactersApi,
+  MusicEditApi,
+  ProductShotApi,
+  VideoEditApi,
+} from "./aiwave.js";
 import type {
   FotoHubConfig,
   RequestOptions,
@@ -128,7 +134,7 @@ const DEFAULT_IMAGE_MODEL = "seedream-5-0-260128";
 // it has its own method rather than being reachable through generateVideo().
 const DEFAULT_SEEDANCE_MODEL = "seedance-2-5";
 
-const SDK_VERSION = "1.11.0";
+const SDK_VERSION = "1.12.0";
 const USER_AGENT = `fotohub-sdk-node/${SDK_VERSION}`;
 
 /**
@@ -288,6 +294,15 @@ export class FotoHub {
   private readonly maxRetries: number;
   private readonly fetchFn: typeof globalThis.fetch;
 
+  /** Character Studio: `/v1/characters`. See {@link CharactersApi}. */
+  readonly characters: CharactersApi;
+  /** Product Shot (and its batches): `/v1/aiwave/product-shot`. See {@link ProductShotApi}. */
+  readonly productShot: ProductShotApi;
+  /** Video edit by chat: `/v1/aiwave/video-edit`. See {@link VideoEditApi}. */
+  readonly videoEdit: VideoEditApi;
+  /** Music section / lyric edits and soundtracks: `/v1/aiwave/music-edit`. See {@link MusicEditApi}. */
+  readonly musicEdit: MusicEditApi;
+
   constructor(config: FotoHubConfig) {
     if (!config.apiKey) {
       throw new FotoHubError(
@@ -308,6 +323,12 @@ export class FotoHub {
         "missing_fetch"
       );
     }
+
+    const request = <T>(options: RequestOptions): Promise<T> => this.request<T>(options);
+    this.characters = new CharactersApi(request);
+    this.productShot = new ProductShotApi(request);
+    this.videoEdit = new VideoEditApi(request);
+    this.musicEdit = new MusicEditApi(request);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

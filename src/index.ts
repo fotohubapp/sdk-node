@@ -38,6 +38,38 @@ export { FotoHub } from "./client.js";
 // body. Consume /v1/ai/agent/stream directly for real SSE.
 export { ChatStream } from "./streaming.js";
 
+// AI Wave 1: Character Studio, Product Shot, video edit by chat, music edits
+export {
+  CharactersApi,
+  ProductShotApi,
+  ProductShotBatchesApi,
+  VideoEditApi,
+  MusicEditApi,
+  AiWaveJobError,
+  JOB_TERMINAL,
+  BATCH_TERMINAL,
+} from "./aiwave.js";
+export type {
+  AiWaveJob,
+  AiWaveResponse,
+  WaitOptions,
+  ClipSelection,
+  CharacterConsent,
+  CharacterCreateOptions,
+  CharacterUpdateOptions,
+  CharacterGenerationOptions,
+  ProductShotSettings,
+  ProductShotQuoteOptions,
+  ProductShotCreateOptions,
+  ProductShotBatchItem,
+  ProductShotBatchCreateOptions,
+  VideoEditSessionOptions,
+  VideoEditTurnOptions,
+  MusicSectionOptions,
+  MusicLyricsOptions,
+  MusicSoundtrackOptions,
+} from "./aiwave.js";
+
 // Error classes
 export {
   FotoHubError,
