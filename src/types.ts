@@ -173,7 +173,7 @@ export interface GenerateVideoOptions {
   aspect_ratio?: string;
   /** Reference/input image URL (for image-to-video) */
   image_url?: string;
-  /** Resolution */
+  /** Resolution. `sora-2-pro` is 1080p-only: it is rendered and billed at 1080p whatever is sent. */
   resolution?: "720p" | "1080p" | "4k";
   /** Negative prompt */
   negative_prompt?: string;
