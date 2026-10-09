@@ -361,7 +361,7 @@ console.log(response.credits_used);
 
 `chat()` accepts exactly four model IDs — `gemini-flash` (default),
 `gemini-pro`, `gpt-4o`, `claude-sonnet`. Anything else is rejected with `400`.
-For a full Claude model ID use `chatClaude()` or `chatBedrock()`.
+For a full Claude model ID use `chatClaude()` (`chatBedrock()` is a deprecated alias kept for compatibility).
 
 `credits_used` is the authoritative charge. `usage` is passed straight through
 from the provider and can arrive as `{}`, so read `usage.total_tokens` defensively.
@@ -879,7 +879,7 @@ positional arguments. Only four methods work without an API key.
 |--------|-------------|:---:|
 | `chat(options)` | Chat completion — one complete body, never a stream | Yes |
 | `chatClaude(options)` | Chat completion on a premium Claude model | Yes |
-| `chatBedrock(options)` | Chat completion via Bedrock routing | Yes |
+| `chatBedrock(options)` | Deprecated alias of `chatClaude()` (same `POST /v1/ai/chat/claude` endpoint), kept for compatibility | Yes |
 | `chatStream(options)` | **Throws `ValidationError`** — see [Streaming](#streaming) | --- |
 | `enhancePrompt(prompt, style?)` | Rewrite a prompt for better output | Yes |
 | `gabrielClassify(options)` | Route a request to a model (returns a decision, not a completion) | Yes |

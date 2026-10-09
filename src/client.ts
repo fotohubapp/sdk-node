@@ -1159,6 +1159,9 @@ export class FotoHub {
   }
 
   /**
+   * Alias of {@link chatClaude}, kept for compatibility: calls the same
+   * FOTOhub AI chat endpoint (`POST /v1/ai/chat/claude`).
+   *
    * @deprecated Use {@link chatClaude} instead. This method will be removed in
    * a future release.
    */
