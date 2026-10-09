@@ -199,9 +199,10 @@ export class ValidationError extends FotoHubError {
     message: string = "Request validation failed",
     fieldErrors?: Record<string, string[]>,
     code: string = "validation_error",
-    details?: Record<string, unknown>
+    details?: Record<string, unknown>,
+    statusCode: number = 422
   ) {
-    super(message, code, 422, { fieldErrors, ...details });
+    super(message, code, statusCode, { fieldErrors, ...details });
     this.name = "ValidationError";
     this.fieldErrors = fieldErrors;
   }
@@ -313,5 +314,97 @@ export class SaveConflictError extends FotoHubError {
     this.name = "SaveConflictError";
     const rev = details?.currentSaveRev;
     this.currentSaveRev = typeof rev === "number" ? rev : undefined;
+  }
+}
+
+/** A number from an error body, or `undefined` (a string numeral counts; a boolean does not). */
+function num(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "" && !Number.isNaN(Number(value))) {
+    return Number(value);
+  }
+  return undefined;
+}
+
+/**
+ * Thrown on a 409 `price_changed`: the price moved away from the `quoteCredits` you sent.
+ *
+ * Sent by the routes that take `quote_credits` (Upscale Pro video, the AI video routes).
+ * The start was refused **before anything was charged**: show {@link currentCredits} (or
+ * quote again) and resend with the new figure. For the AI video routes keep the same
+ * `requestId`.
+ */
+export class PriceChangedError extends FotoHubError {
+  /** The `quote_credits` you sent. */
+  public readonly quotedCredits: number | undefined;
+  /** The price now, in the same unit. */
+  public readonly currentCredits: number | undefined;
+  /** Upscale Pro video only: the seconds the measured file is billed for. */
+  public readonly billedSeconds: number | undefined;
+
+  constructor(
+    message: string = "The price changed since it was shown",
+    details: Record<string, unknown> = {}
+  ) {
+    super(message, "price_changed", 409, details);
+    this.name = "PriceChangedError";
+    this.quotedCredits = num(details.quoted_credits);
+    this.currentCredits = num(details.current_credits);
+    this.billedSeconds = num(details.billed_seconds);
+  }
+
+  /** A refused start is never billed. Always `false`. */
+  public get charged(): boolean {
+    return false;
+  }
+}
+
+/**
+ * Thrown on a 400 `url_blocked`: a URL you passed was refused before any work.
+ *
+ * API-key callers must pass public `https://` URLs on the default port 443, without
+ * credentials, whose host resolves to public addresses only. {@link field} names the
+ * parameter (list items as `image_urls[2]`); the URL is never echoed back. Nothing was
+ * charged. A subclass of {@link ValidationError}. `code` is `url_blocked` (or
+ * `url_not_allowed` for browser-session callers).
+ */
+export class UrlBlockedError extends ValidationError {
+  /** The request parameter that carried the refused URL. */
+  public readonly field: string | undefined;
+  /** `false`: the URL is checked before billing. */
+  public readonly charged: boolean;
+
+  constructor(
+    message: string = "A URL in the request was refused",
+    code: string = "url_blocked",
+    details: Record<string, unknown> = {}
+  ) {
+    super(message, undefined, code, details, 400);
+    this.name = "UrlBlockedError";
+    this.field = typeof details.field === "string" ? details.field : undefined;
+    this.charged = details.charged === true;
+  }
+}
+
+/**
+ * Thrown when the model has no price configured (`PRICING_NOT_CONFIGURED`).
+ *
+ * Refused before any money moved; never billed at a guessed price. Usually HTTP 503; when the
+ * refusal comes from further down the pipeline the API answers 424 with the code inside the
+ * message (also mapped here). Not retried: retrying cannot help until the price is configured.
+ */
+export class PricingNotConfiguredError extends ServerError {
+  constructor(
+    message: string = "This model has no price configured. You were not charged.",
+    statusCode: number = 503,
+    details?: Record<string, unknown>
+  ) {
+    super(message, statusCode, "PRICING_NOT_CONFIGURED", details);
+    this.name = "PricingNotConfiguredError";
+  }
+
+  /** Always `false`. */
+  public get charged(): boolean {
+    return false;
   }
 }

@@ -49,6 +49,16 @@ export {
   JOB_TERMINAL,
   BATCH_TERMINAL,
 } from "./aiwave.js";
+export { UpscaleProApi, AiVideoApi } from "./media.js";
+export type {
+  UpscaleProQuoteOptions,
+  UpscaleProImageOptions,
+  UpscaleProVideoOptions,
+  AvatarConsent,
+  AiVideoGenerateOptions,
+  AiVideoAvatarOptions,
+  AiVideoDubOptions,
+} from "./media.js";
 export type {
   AiWaveJob,
   AiWaveResponse,
@@ -90,6 +100,9 @@ export {
   JobTimeoutError,
   SaveConflictError,
   WebhookError,
+  PriceChangedError,
+  UrlBlockedError,
+  PricingNotConfiguredError,
 } from "./errors.js";
 
 // Types — Client configuration
@@ -107,6 +120,10 @@ export type {
   GenerateIdaQOptions,
   IdaQJobSubmitResult,
   IdaQJobStatus,
+  GenerateIdaQ2Options,
+  IdaQ2JobSubmitResult,
+  IdaQ2JobStatus,
+  IdaQ2Result,
 } from "./types.js";
 
 // Types — Image editing

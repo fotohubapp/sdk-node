@@ -4,6 +4,7 @@ import {
   ProductShotApi,
   VideoEditApi,
 } from "./aiwave.js";
+import { AiVideoApi, UpscaleProApi } from "./media.js";
 import type {
   FotoHubConfig,
   RequestOptions,
@@ -13,6 +14,10 @@ import type {
   GenerateIdaQOptions,
   IdaQJobSubmitResult,
   IdaQJobStatus,
+  GenerateIdaQ2Options,
+  IdaQ2JobSubmitResult,
+  IdaQ2JobStatus,
+  IdaQ2Result,
   EditImageOptions,
   EditResult,
   GenerateVideoOptions,
@@ -119,6 +124,9 @@ import {
   JobFailedError,
   JobTimeoutError,
   SaveConflictError,
+  PriceChangedError,
+  UrlBlockedError,
+  PricingNotConfiguredError,
 } from "./errors.js";
 
 // parseSSEStream is no longer used here: chatStream() throws instead of
@@ -134,7 +142,7 @@ const DEFAULT_IMAGE_MODEL = "seedream-5-0-260128";
 // it has its own method rather than being reachable through generateVideo().
 const DEFAULT_SEEDANCE_MODEL = "seedance-2-5";
 
-const SDK_VERSION = "1.12.0";
+const SDK_VERSION = "1.13.0";
 const USER_AGENT = `fotohub-sdk-node/${SDK_VERSION}`;
 
 /**
@@ -183,6 +191,37 @@ const IDEMPOTENCY_EXCLUDE_PREFIXES = [
 const TIMELINE_ERROR_PATH =
   /^\/v1\/video\/(projects|jobs|ops|detect-scenes|detect-silence|detect-beats|transcribe)(\/|$)/;
 
+/** A `detail.error` that is a machine code (`price_changed`) rather than a sentence. */
+const CODE_LIKE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
+
+/** 503 answers that are a decision, not an outage: repeating the call cannot change them. */
+const FINAL_503_CODES = new Set(["PRICING_NOT_CONFIGURED", "MODEL_DISABLED"]);
+
+/** The IDA Q Image 2 model id; always asynchronous (202 + poll). */
+const IDA_Q2_MODEL = "ida-q-image-2";
+
+/**
+ * The machine code of a FastAPI `{"detail": {...}}` error, or `undefined`.
+ *
+ * api-server sends it as `detail.code` (`PRICING_NOT_CONFIGURED`, the IDA Q refusals, whose
+ * `detail.error` is a sentence) or as `detail.error` itself (`price_changed`, `url_blocked`,
+ * `engine_busy`). `code` wins when both exist.
+ */
+function detailCode(body: unknown): string | undefined {
+  if (typeof body !== "object" || body === null) return undefined;
+  const detail = (body as Record<string, unknown>).detail;
+  if (typeof detail !== "object" || detail === null || Array.isArray(detail)) return undefined;
+  const d = detail as Record<string, unknown>;
+  if (typeof d.code === "string" && d.code !== "") return d.code;
+  if (typeof d.error === "string" && CODE_LIKE.test(d.error)) return d.error;
+  return undefined;
+}
+
+/** A server error that a retry cannot change (see FINAL_503_CODES). */
+function isFinalServerError(error: FotoHubError): boolean {
+  return error instanceof PricingNotConfiguredError || FINAL_503_CODES.has(error.code);
+}
+
 /** Headers carrying a caller-supplied idempotency key; none means the client mints one. */
 function idempotencyHeaders(key: string | undefined): Record<string, string> | undefined {
   return key ? { [IDEMPOTENCY_HEADER]: key } : undefined;
@@ -228,6 +267,19 @@ function randomIdempotencyKey(): string {
     `${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}` +
     `${Date.now().toString(36)}${suffix}`
   );
+}
+
+/** A UUID v4 (the IDA Q Image 2 `job_id` must be one); falls back like randomIdempotencyKey. */
+function randomUuid(): string {
+  const c: Crypto | undefined = (globalThis as { crypto?: Crypto }).crypto;
+  if (typeof c?.randomUUID === "function") return c.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (typeof c?.getRandomValues === "function") c.getRandomValues(bytes);
+  else for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;
+  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 /**
@@ -302,6 +354,10 @@ export class FotoHub {
   readonly videoEdit: VideoEditApi;
   /** Music section / lyric edits and soundtracks: `/v1/aiwave/music-edit`. See {@link MusicEditApi}. */
   readonly musicEdit: MusicEditApi;
+  /** Upscale Pro 4K image / video: `/v1/upscale/pro`. See {@link UpscaleProApi}. */
+  readonly upscalePro: UpscaleProApi;
+  /** AI video jobs: `/v1/video/generations`, `/avatar`, `/dub`. See {@link AiVideoApi}. */
+  readonly aiVideo: AiVideoApi;
 
   constructor(config: FotoHubConfig) {
     if (!config.apiKey) {
@@ -329,6 +385,8 @@ export class FotoHub {
     this.productShot = new ProductShotApi(request);
     this.videoEdit = new VideoEditApi(request);
     this.musicEdit = new MusicEditApi(request);
+    this.upscalePro = new UpscaleProApi(request);
+    this.aiVideo = new AiVideoApi(request);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -456,6 +514,99 @@ export class FotoHub {
   }
 
   /**
+   * Generate images with IDA Q Image 2, FOTOhub's proprietary image model, resolving once
+   * the job completes.
+   *
+   * Always asynchronous: the API answers 202 with a `job_id` and the job runs in a queue.
+   * This submits and polls `GET /v1/ai/generate/image/ida-q-image-2/{job_id}`. The price
+   * depends on `size_tier` x `preset` (and `transparent`) times the image count; read it
+   * from `GET /v1/pricing`. The prepaid USD wallet is charged at submit and refunded
+   * automatically if the job fails.
+   *
+   * `job_id` is the job's idempotency key: a retry with the same id returns the queued job
+   * and is never charged twice. The SDK mints one when you do not pass it.
+   *
+   * Refusals carry `code`: `QUEUE_FULL` / `TOO_MANY_ACTIVE` / `DAILY_LIMIT`
+   * ({@link RateLimitError}), `PLAN_REQUIRED` ({@link PermissionError}), `MODEL_DISABLED` /
+   * `TEMPORARY_ERROR` ({@link ServerError}), `INVALID_REQUEST` / `CONTENT_POLICY`
+   * ({@link ValidationError}). Nothing is charged on a refusal.
+   *
+   * @example
+   * ```typescript
+   * const result = await client.generateIdaQ2({
+   *   prompt: "A minimalist poster for a jazz night, bold typography",
+   *   size_tier: "1K",
+   *   preset: "balanced",
+   *   aspect_ratio: "4:5",
+   * });
+   * console.log(result.images[0], result.cost_usd);
+   * ```
+   */
+  async generateIdaQ2(options: GenerateIdaQ2Options): Promise<IdaQ2Result> {
+    const body: Record<string, unknown> = {
+      prompt: options.prompt,
+      model: IDA_Q2_MODEL,
+      size_tier: options.size_tier ?? "1K",
+      preset: options.preset ?? "balanced",
+      aspect_ratio: options.aspect_ratio ?? "1:1",
+      num_images: options.num_images ?? 1,
+      // Minted once per call, so the client's own retries reuse it.
+      job_id: options.job_id ?? randomUuid(),
+    };
+    if (options.transparent !== undefined) body.transparent = options.transparent;
+    if (options.seed !== undefined) body.seed = options.seed;
+    if (options.style !== undefined) body.style = options.style;
+    if (options.palette !== undefined) body.palette = options.palette;
+    if (options.layout !== undefined) body.layout = options.layout;
+
+    const submitted = await this.request<IdaQ2JobSubmitResult>({
+      method: "POST",
+      path: "/v1/ai/generate/image",
+      body,
+      requiresAuth: true,
+    });
+    const jobId = String(submitted.job_id ?? body.job_id);
+
+    const pollIntervalMs = (options.poll_interval_seconds ?? 5) * 1000;
+    const timeoutSeconds = options.timeout_seconds ?? 900;
+    const deadline = Date.now() + timeoutSeconds * 1000;
+
+    while (Date.now() < deadline) {
+      const status = await this.request<IdaQ2JobStatus>({
+        method: "GET",
+        path: `/v1/ai/generate/image/${IDA_Q2_MODEL}/${jobId}`,
+        requiresAuth: true,
+      });
+
+      if (status.status === "completed") {
+        const out: IdaQ2Result = {
+          model: IDA_Q2_MODEL,
+          job_id: jobId,
+          // Charged at submit; the poll reports job state only, so carry the cost across.
+          cost_usd: submitted.cost_usd ?? submitted.billing?.cost_usd,
+          billing: submitted.billing,
+          images: status.images ?? [],
+          metadata: status.metadata,
+        };
+        if (status.result !== undefined) out.result = status.result;
+        return out;
+      }
+      if (status.status === "failed" || status.status === "cancelled") {
+        throw new FotoHubError(
+          status.error ?? `IDA Q Image 2 job ${jobId} ${status.status}`,
+          status.error_code ?? "generation_failed",
+          undefined,
+          { ...status }
+        );
+      }
+
+      await this.sleep(pollIntervalMs);
+    }
+
+    throw new TimeoutError(`IDA Q Image 2 job ${jobId} did not complete within ${timeoutSeconds}s`);
+  }
+
+  /**
    * Edit an existing image using AI (inpaint, outpaint, background swap, upscale, or remove background).
    *
    * @param options - Image editing parameters including mode and image URL
@@ -533,6 +684,7 @@ export class FotoHub {
     if (options.seed !== undefined) body.seed = options.seed;
     if (options.guidance_scale !== undefined) body.guidance_scale = options.guidance_scale;
     if (options.fps !== undefined) body.fps = options.fps;
+    if (options.mode !== undefined) body.mode = options.mode;
 
     const submitted = await this.request<VideoResult>({
       method: "POST",
@@ -3090,7 +3242,9 @@ export class FotoHub {
             idempotencyKey &&
             (TIMELINE_ERROR_PATH.test(options.path)
               ? error.code === "idempotency-in-progress"
-              : true) &&
+              : // The in-flight duplicate is a code-less `{"detail": "<text>"}`; a 409 with
+                // a structured code (`price_changed`, `not_cancellable`, ...) is an answer.
+                error.code === "unknown") &&
             attempt < this.maxRetries
           ) {
             lastError = error;
@@ -3098,7 +3252,12 @@ export class FotoHub {
           }
 
           // Retry on server errors (5xx)
-          if (response.status >= 500 && retryAmbiguous && attempt < this.maxRetries) {
+          if (
+            response.status >= 500 &&
+            retryAmbiguous &&
+            !isFinalServerError(error) &&
+            attempt < this.maxRetries
+          ) {
             lastError = error;
             continue;
           }
@@ -3112,7 +3271,9 @@ export class FotoHub {
           // Already handled — only retry for specific errors
           if (
             error instanceof RateLimitError ||
-            (retryAmbiguous && (error instanceof ServerError || error instanceof TimeoutError))
+            (retryAmbiguous &&
+              ((error instanceof ServerError && !isFinalServerError(error)) ||
+                error instanceof TimeoutError))
           ) {
             lastError = error;
             continue;
@@ -3209,6 +3370,28 @@ export class FotoHub {
       TIMELINE_ERROR_PATH.test(path) && error?.code && error.code !== "unknown"
         ? error.code
         : undefined;
+    // Server-defined code of a `{"detail": {...}}` body (IDA Q refusals, `engine_busy`, ...).
+    const dcode = detailCode(body);
+    const scode = tcode ?? dcode;
+    const fields =
+      dcode !== undefined ? (body as { detail: Record<string, unknown> }).detail : undefined;
+    const status = response.status;
+
+    if (status === 409 && dcode === "price_changed") {
+      return new PriceChangedError(message, fields);
+    }
+    if (status === 400 && (dcode === "url_blocked" || dcode === "url_not_allowed")) {
+      return new UrlBlockedError(message, dcode, fields);
+    }
+    if (
+      (status >= 500 || status === 424) &&
+      (dcode === "PRICING_NOT_CONFIGURED" ||
+        // On the video route a refusal further down the pipeline arrives as a 424 whose
+        // `detail` is a string with the code inside it.
+        (status === 424 && message.includes("PRICING_NOT_CONFIGURED")))
+    ) {
+      return new PricingNotConfiguredError(message, status, fields);
+    }
 
     switch (response.status) {
       case 401:
@@ -3256,7 +3439,7 @@ export class FotoHub {
         }, tcode);
       }
       case 403:
-        return new PermissionError(message, tcode);
+        return new PermissionError(message, scode);
       case 404:
         return new NotFoundError(message, tcode, tcode ? error?.details : undefined);
       case 409:
@@ -3273,24 +3456,25 @@ export class FotoHub {
         return new ValidationError(
           message,
           error?.details as Record<string, string[]> | undefined,
-          tcode
+          scode
         );
       case 429: {
-        const retryAfter = response.headers.get("retry-after");
-        return new RateLimitError(
-          message,
-          retryAfter ? parseInt(retryAfter, 10) : undefined,
-          tcode,
-          tcode ? error?.details : undefined
-        );
+        const header = response.headers.get("retry-after");
+        const bodyRetry = fields?.retry_after ?? fields?.retry_after_s;
+        const retryAfter = header
+          ? parseInt(header, 10)
+          : typeof bodyRetry === "number"
+            ? bodyRetry
+            : undefined;
+        return new RateLimitError(message, retryAfter, scode, tcode ? error?.details : fields);
       }
       default:
         if (response.status >= 500) {
           return new ServerError(
             message,
             response.status,
-            tcode,
-            tcode ? error?.details : undefined
+            scode,
+            tcode ? error?.details : fields
           );
         }
         return new FotoHubError(message, code, response.status, error?.details);

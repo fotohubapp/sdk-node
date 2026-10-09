@@ -125,6 +125,80 @@ export interface IdaQJobStatus {
   error?: string;
 }
 
+export interface GenerateIdaQ2Options {
+  /** What to render. Any language. */
+  prompt: string;
+  /** "1K" (default), "HD" or "FULL". */
+  size_tier?: "1K" | "HD" | "FULL";
+  /** "fast", "balanced" (default) or "max" (`FULL` has no `max`). */
+  preset?: "fast" | "balanced" | "max";
+  /** e.g. "1:1" (default), "16:9", "4:5", "9:16". Not every ratio is offered at every tier (422). */
+  aspect_ratio?: string;
+  /** 1 up to the cap for the tier and preset (4 at 1K fast/balanced). */
+  num_images?: number;
+  /** Transparent background (priced separately). */
+  transparent?: boolean;
+  /** Integer seed for reproducibility. */
+  seed?: number;
+  /** e.g. "photo", "poster", "typography", "illustration". */
+  style?: string;
+  /** A named palette ("pastel", "neon", ...) or 1-8 "#RRGGBB" colours. */
+  palette?: string | string[];
+  /** Up to 12 boxes `{ type: "obj" | "text", box: { x, y, w, h }, text?, desc? }` in output pixels. */
+  layout?: Array<Record<string, unknown>>;
+  /** A UUID identifying the job: its idempotency key. Minted when omitted. */
+  job_id?: string;
+  /** Seconds between status checks. Defaults to 5. */
+  poll_interval_seconds?: number;
+  /** Maximum seconds to wait before throwing (the job keeps running). Defaults to 900. */
+  timeout_seconds?: number;
+}
+
+export interface IdaQ2JobSubmitResult {
+  model: "ida-q-image-2";
+  job_id: string;
+  status: string;
+  duplicate?: boolean;
+  num_images?: number;
+  size_tier?: string;
+  preset?: string;
+  aspect_ratio?: string;
+  transparent?: boolean;
+  /** USD charged at submit. Refunded in full if the job fails. */
+  cost_usd?: number;
+  currency?: string;
+  billing?: BillingInfo;
+  estimated_seconds?: number;
+  queue_position?: number | null;
+  queue_depth?: number | null;
+  poll_url?: string;
+}
+
+export interface IdaQ2JobStatus {
+  job_id: string;
+  status: "queued" | "processing" | "running" | "completed" | "failed" | "cancelled";
+  progress?: number;
+  estimated_seconds?: number;
+  images?: string[];
+  metadata?: Record<string, unknown>;
+  /** seed, width, height, num_images, requested_images, has_alpha (when reported). */
+  result?: Record<string, unknown>;
+  error?: string;
+  error_code?: string;
+  [key: string]: unknown;
+}
+
+export interface IdaQ2Result {
+  model: "ida-q-image-2";
+  job_id: string;
+  /** USD charged at submit. */
+  cost_usd?: number;
+  billing?: BillingInfo;
+  images: string[];
+  metadata?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+}
+
 // ─── Image Editing ────────────────────────────────────────────────────────────
 
 export interface EditImageOptions {
@@ -183,6 +257,12 @@ export interface GenerateVideoOptions {
   guidance_scale?: number;
   /** Frames per second */
   fps?: number;
+  /**
+   * Kling V3 (`kling-v3`, `kling-v3-omni`) only: `"standard"` (default, 720p) or `"pro"`
+   * (1080p). Priced per second by mode; `duration` snaps to 5 or 10 s, and `resolution` is
+   * ignored for these models. Not sent when omitted.
+   */
+  mode?: "standard" | "pro";
   /**
    * Milliseconds between polls, for the models that queue instead of rendering
    * inline (Wan, Grok). Defaults to 5000.

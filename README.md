@@ -688,6 +688,13 @@ try {
 | `NetworkError` | --- | `cause` | Network connectivity issue |
 | `JobFailedError` | --- | `jobId` | Async job failed |
 | `JobTimeoutError` | --- | `jobId` | Job polling exceeded `maxWait` |
+| `PriceChangedError` (`FotoHubError`) | 409 `price_changed` | `quotedCredits`, `currentCredits`, `billedSeconds`, `charged` | The price moved away from the `quoteCredits` you sent. Nothing charged: re-quote, show, resend |
+| `UrlBlockedError` (`ValidationError`) | 400 `url_blocked` | `field`, `charged` | A URL parameter was refused (public `https://`, port 443, no credentials, public DNS only) |
+| `PricingNotConfiguredError` (`ServerError`) | 503 (or 424) `PRICING_NOT_CONFIGURED` | `charged` | The model has no price configured; refused before any charge, not retried |
+
+`code` also carries the server's own code from a `{"detail": {...}}` body (`detail.code`,
+else `detail.error`), e.g. `QUEUE_FULL` on a `RateLimitError`, `PLAN_REQUIRED` on a
+`PermissionError`, `MODEL_DISABLED` on a `ServerError`.
 
 ---
 
@@ -699,11 +706,12 @@ The SDK automatically retries failed requests with exponential backoff:
 |-----------|----------|
 | 429 Rate Limited | Yes |
 | 408 Timeout | Yes |
-| 5xx Server Error | Yes |
+| 5xx Server Error | Yes, except 503 `PRICING_NOT_CONFIGURED` / `MODEL_DISABLED` |
+| `upscalePro.image()` / `upscalePro.video()` after a 5xx, timeout or network failure | No (no idempotency key on these routes; a replay could start a second job) |
 | Network errors | Yes |
 | 409 `idempotency-in-progress` on video routes, or the legacy `{"detail"}` 409 on other keyed endpoints (your earlier attempt with the same idempotency key is still in flight) | Yes |
 | `POST /v1/video/projects/{id}/ops` after a 5xx, timeout or network failure, without `expectedSaveRev` | No (outcome unknown; a replay could apply twice) |
-| 401, 402, 403, 404, 409, 422 | No |
+| 401, 402, 403, 404, 409 with a code (`price_changed`, ...), 422 | No |
 
 **Backoff schedule:** 1s, 2s, 4s (capped at 8s)
 
@@ -842,11 +850,14 @@ positional arguments. Only four methods work without an API key.
 |--------|-------------|:---:|
 | `generateImage(options)` | Generate images from a text prompt | Yes |
 | `generateIdaQ(options)` | Generate with IDA Q 1.0 (proprietary) | Yes |
+| `generateIdaQ2(options)` | IDA Q Image 2 — submits (202) and polls to completion; `job_id` is the idempotency key (minted when omitted) | Yes |
 | `editImage(options)` | Edit an existing image from an instruction | Yes |
 | `removeBackground(imageUrl)` | Cut out the background | Yes |
 | `upscaleImage(imageUrl, scale?)` | Upscale (`scale` defaults to `2`) | Yes |
 | `analyzeImage(options)` | Vision analysis of an image | Yes |
-| `generateVideo(options)` | Generate a video — **synchronous**, returns `video_url`. Not for Seedance | Yes |
+| `generateVideo(options)` | Generate a video — **synchronous**, returns `video_url`. Not for Seedance. `mode` (Kling V3): `"standard"` 720p or `"pro"` 1080p | Yes |
+| `upscalePro.quote / image / video / jobs / job / cancel / waitForJob` | Upscale Pro 4K (Professional plan). `video({ quoteCredits })` = the quote you showed; 409 `PriceChangedError` when the measured file costs more | Yes |
+| `aiVideo.generate / avatar / dub / get / waitForJob` | AI video jobs (`fotohub-motion-audio` 720p 5 s, avatar, dubbing) with `quoteCredits` and an automatic `requestId` | Yes |
 | `generateSeedance(options)` | Seedance 4–30s — submits and polls to completion | Yes |
 | `registerVideoAsset(imageUrl)` | Register a face for Seedance `asset_ids` — free | Yes |
 | `waitForVideo(result, opts?)` | Deprecated no-op; returns its input unchanged | Yes |
@@ -945,6 +956,30 @@ npm run build
 # Type check
 npm run typecheck
 ```
+
+---
+
+## Changelog
+
+### 1.13.0 (October 2026)
+
+- Typed errors: `PriceChangedError` (409 `price_changed`: `quotedCredits`,
+  `currentCredits`, `billedSeconds`), `UrlBlockedError` (400 `url_blocked`, a
+  `ValidationError`: `field`, `charged`), `PricingNotConfiguredError` (503 / 424
+  `PRICING_NOT_CONFIGURED`, a `ServerError`, not retried). `code` now carries the server's
+  code from a `{"detail": {...}}` body (IDA Q refusals: `QUEUE_FULL`, `PLAN_REQUIRED`,
+  `MODEL_DISABLED`, ...); `RateLimitError.retryAfter` falls back to the body's
+  `retry_after`. A 503 `MODEL_DISABLED` and a 409 carrying a code are no longer retried.
+- `generateVideo({ mode: "standard" | "pro" })` for Kling V3 (720p / 1080p).
+- `client.upscalePro`: `quote`, `image`, `video` (with `quoteCredits`), `jobs`, `job`,
+  `cancel`, `waitForJob`.
+- `client.aiVideo`: `generate`, `avatar`, `dub`, `get`, `waitForJob`, with `quoteCredits`
+  and an automatic `requestId`.
+- `generateIdaQ2(options)`: IDA Q Image 2, submit and poll.
+
+### 1.12.0
+
+- AI Wave 1 namespaces: `characters`, `productShot`, `videoEdit`, `musicEdit`.
 
 ---
 

@@ -90,7 +90,8 @@ export class AiWaveJobError extends JobFailedError {
   }
 }
 
-function uuid(): string {
+/** @internal A UUID v4 for request ids. */
+export function uuid(): string {
   const c: Crypto | undefined = (globalThis as { crypto?: Crypto }).crypto;
   if (typeof c?.randomUUID === "function") return c.randomUUID();
   const hex = (n: number): string =>
@@ -99,7 +100,7 @@ function uuid(): string {
 }
 
 /** Drops `undefined` so the server's own defaults apply to what the caller did not set. */
-function body(fields: Record<string, unknown>): Record<string, unknown> {
+export function body(fields: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(fields)) if (v !== undefined) out[k] = v;
   return out;
@@ -125,7 +126,8 @@ function errorText(view: AiWaveJob, fallback: string): string {
   return view.refund_message ? `${detail} ${view.refund_message}` : detail;
 }
 
-class Namespace {
+/** @internal Shared base of the job namespaces (also used by `media.ts`). */
+export class Namespace {
   constructor(protected readonly request: AiWaveRequest) {}
 
   protected call<T = AiWaveResponse>(
