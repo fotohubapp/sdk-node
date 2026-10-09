@@ -197,6 +197,33 @@ const CODE_LIKE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
 /** 503 answers that are a decision, not an outage: repeating the call cannot change them. */
 const FINAL_503_CODES = new Set(["PRICING_NOT_CONFIGURED", "MODEL_DISABLED"]);
 
+/**
+ * 429 answers a retry within seconds cannot change: a used-up daily cap, or the caller's own jobs
+ * filling every slot (it clears only when one of them finishes). `QUEUE_FULL` is retried.
+ */
+const FINAL_429_CODES = new Set(["DAILY_LIMIT", "TOO_MANY_ACTIVE"]);
+
+/**
+ * The human message of a dict `detail`, picked by the body's shape.
+ *
+ * api-server sends two shapes with both keys. When `error` is a machine code (`price_changed`,
+ * `url_blocked`, `feature_off`) the sentence is `message`. When `error` is itself a sentence
+ * (the IDA Q refusals: `QUEUE_FULL`, `INVALID_REQUEST`, ...) it is the real reason and `message`
+ * is only the no-charge note, so the note is appended rather than allowed to replace it.
+ */
+function detailMessage(d: Record<string, unknown>): string {
+  const error = d.error;
+  const message = d.message;
+  if (typeof error === "string" && error.trim() !== "" && !CODE_LIKE.test(error)) {
+    const reason = error.trimEnd();
+    if (typeof message === "string" && message.trim() !== "" && !reason.includes(message)) {
+      return `${reason}${/[.!?]$/.test(reason) ? " " : ". "}${message.trim()}`;
+    }
+    return reason;
+  }
+  return String(message ?? error ?? d.detail ?? "Unknown error");
+}
+
 /** The IDA Q Image 2 model id; always asynchronous (202 + poll). */
 const IDA_Q2_MODEL = "ida-q-image-2";
 
@@ -215,6 +242,11 @@ function detailCode(body: unknown): string | undefined {
   if (typeof d.code === "string" && d.code !== "") return d.code;
   if (typeof d.error === "string" && CODE_LIKE.test(d.error)) return d.error;
   return undefined;
+}
+
+/** A 429 that a retry cannot change (see FINAL_429_CODES). */
+function isFinalRateLimit(error: FotoHubError): boolean {
+  return FINAL_429_CODES.has(error.code);
 }
 
 /** A server error that a retry cannot change (see FINAL_503_CODES). */
@@ -3220,7 +3252,10 @@ export class FotoHub {
           const error = await this.handleErrorResponse(response, options.path);
 
           // Retry on rate limit and timeout
-          if (response.status === 429 || response.status === 408) {
+          if (
+            (response.status === 429 && !isFinalRateLimit(error)) ||
+            response.status === 408
+          ) {
             lastError = error;
             continue;
           }
@@ -3270,7 +3305,7 @@ export class FotoHub {
         if (error instanceof FotoHubError) {
           // Already handled — only retry for specific errors
           if (
-            error instanceof RateLimitError ||
+            (error instanceof RateLimitError && !isFinalRateLimit(error)) ||
             (retryAmbiguous &&
               ((error instanceof ServerError && !isFinalServerError(error)) ||
                 error instanceof TimeoutError))
@@ -3447,6 +3482,16 @@ export class FotoHub {
           return new SaveConflictError(message, error?.details);
         }
         return new FotoHubError(message, code, 409, error?.details);
+      case 400:
+        // Parity with Python and the docs: a refused request is a ValidationError whatever
+        // its 4xx. `details` is the server's dict, not a field-name -> messages map.
+        return new ValidationError(
+          message,
+          undefined,
+          scode ?? code,
+          tcode ? error?.details : (fields ?? error?.details),
+          400
+        );
       case 422:
         // Timeline envelopes carry `details` ({ errors: [...] } or { path }),
         // which is not a field-name -> messages map: keep it under `details`.
@@ -3466,7 +3511,12 @@ export class FotoHub {
           : typeof bodyRetry === "number"
             ? bodyRetry
             : undefined;
-        return new RateLimitError(message, retryAfter, scode, tcode ? error?.details : fields);
+        // The `{"error": {"code"}}` envelope (job routes) carries the code too.
+        const ecode =
+          error?.code && error.code !== "unknown" && CODE_LIKE.test(error.code)
+            ? error.code
+            : undefined;
+        return new RateLimitError(message, retryAfter, scode ?? ecode, tcode ? error?.details : fields);
       }
       default:
         if (response.status >= 500) {
@@ -3518,7 +3568,7 @@ export class FotoHub {
       if (typeof detail === "object" && detail !== null) {
         const d = detail as Record<string, unknown>;
         return {
-          message: String(d.message ?? d.error ?? d.detail ?? "Unknown error"),
+          message: detailMessage(d),
           code: String(d.code ?? d.error ?? "unknown"),
           details: d,
         };

@@ -3,8 +3,11 @@
  *
  * ```typescript
  * const q = await client.upscalePro.quote({ kind: "video", width: 1280, height: 720, fps: 30, seconds: 18 });
- * const job = await client.upscalePro.video({ videoUrl: "https://example.com/clip.mp4", quoteCredits: q.credits as number });
- * const done = await client.upscalePro.waitForJob(job.job_id as string);
+ * if (q.available) {
+ *   // `credits` is null when the wallet pays (no credit price) or absent; null skips the check.
+ *   const job = await client.upscalePro.video({ videoUrl: "https://example.com/clip.mp4", quoteCredits: q.credits as number | null });
+ *   const done = await client.upscalePro.waitForJob(job.job_id as string);
+ * }
  *
  * const out = await client.aiVideo.generate({ prompt: "A lighthouse at dusk, waves rolling in" });
  * const video = await client.aiVideo.waitForJob((out.job as { id: string }).id);
@@ -17,6 +20,20 @@
 
 import { JOB_TERMINAL, Namespace, body, uuid } from "./aiwave.js";
 import type { AiWaveJob, AiWaveResponse, WaitOptions } from "./aiwave.js";
+import { ValidationError } from "./errors.js";
+
+/**
+ * `quoteCredits` checked before any request: unset (`undefined` / `null`: no price check) or a
+ * finite number >= 0. `JSON.stringify` turns NaN / Infinity into `null`, which would silently skip
+ * the price check, so they are refused here, nothing sent.
+ */
+function quoteCredits(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new ValidationError(`quoteCredits must be a finite number >= 0, got ${String(value)}`);
+  }
+  return value;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Upscale Pro
@@ -58,7 +75,7 @@ export interface UpscaleProVideoOptions {
    * The `credits` of {@link UpscaleProApi.quote} you confirmed. The charge is measured on the file;
    * a higher price is refused with {@link PriceChangedError}, a lower one is charged as measured.
    */
-  quoteCredits?: number;
+  quoteCredits?: number | null;
   /** Up to 2 KB of your own JSON, echoed back in the job. */
   clientRef?: Record<string, unknown>;
 }
@@ -101,13 +118,13 @@ export class UpscaleProApi extends Namespace {
   }
 
   /** Upscale a span of a video. Charged per billed second; answers 202 with `job_id`. */
-  video(options: UpscaleProVideoOptions): Promise<AiWaveResponse> {
+  async video(options: UpscaleProVideoOptions): Promise<AiWaveResponse> {
     return this.start("video", {
       video_url: options.videoUrl,
       scale: options.scale,
       start_seconds: options.startSeconds,
       max_seconds: options.maxSeconds,
-      quote_credits: options.quoteCredits,
+      quote_credits: quoteCredits(options.quoteCredits),
       client_ref: options.clientRef,
     });
   }
@@ -180,7 +197,7 @@ export interface AiVideoGenerateOptions {
   resolution?: "720p";
   seed?: number;
   /** The price you showed; 409 {@link PriceChangedError} when stale. */
-  quoteCredits?: number;
+  quoteCredits?: number | null;
   /** Your UUID for this run; minted when omitted. */
   requestId?: string;
 }
@@ -204,7 +221,7 @@ export interface AiVideoAvatarOptions {
   prompt?: string;
   gesture?: "natural" | "calm" | "expressive";
   seed?: number;
-  quoteCredits?: number;
+  quoteCredits?: number | null;
   requestId?: string;
 }
 
@@ -221,7 +238,7 @@ export interface AiVideoDubOptions {
   voiceRef?: string;
   voiceConsent?: { version: string; locale: string; sha256?: string };
   /** The TOTAL price you showed, all languages. */
-  quoteCredits?: number;
+  quoteCredits?: number | null;
   requestId?: string;
 }
 
@@ -236,7 +253,7 @@ export class AiVideoApi extends Namespace {
   static readonly MOTION_MODEL = "fotohub-motion-audio";
 
   /** AI Motion video with sound (720p, 5 s). Charged. Answers `{ job, created }`. */
-  generate(options: AiVideoGenerateOptions): Promise<AiWaveResponse> {
+  async generate(options: AiVideoGenerateOptions): Promise<AiWaveResponse> {
     return this.call("POST", "/v1/video/generations", {
       ...body({
         model: AiVideoApi.MOTION_MODEL,
@@ -245,14 +262,14 @@ export class AiVideoApi extends Namespace {
         duration: options.duration,
         resolution: options.resolution,
         seed: options.seed,
-        quote_credits: options.quoteCredits,
+        quote_credits: quoteCredits(options.quoteCredits),
       }),
       request_id: options.requestId ?? uuid(),
     });
   }
 
   /** A talking-head clip (up to 5 s) from your own portrait. Charged. Answers `{ job, created }`. */
-  avatar(options: AiVideoAvatarOptions): Promise<AiWaveResponse> {
+  async avatar(options: AiVideoAvatarOptions): Promise<AiWaveResponse> {
     return this.call("POST", "/v1/video/avatar", {
       ...body({
         portrait: options.portrait,
@@ -266,14 +283,14 @@ export class AiVideoApi extends Namespace {
         prompt: options.prompt,
         gesture: options.gesture,
         seed: options.seed,
-        quote_credits: options.quoteCredits,
+        quote_credits: quoteCredits(options.quoteCredits),
       }),
       request_id: options.requestId ?? uuid(),
     });
   }
 
   /** Dub a video into up to 5 languages. Charged. Answers `{ project_id, created, jobs: [...] }`. */
-  dub(options: AiVideoDubOptions): Promise<AiWaveResponse> {
+  async dub(options: AiVideoDubOptions): Promise<AiWaveResponse> {
     return this.call("POST", "/v1/video/dub", {
       ...body({
         source: options.source,
@@ -282,7 +299,7 @@ export class AiVideoApi extends Namespace {
         glossary: options.glossary,
         voice_ref: options.voiceRef,
         voice_consent: options.voiceConsent,
-        quote_credits: options.quoteCredits,
+        quote_credits: quoteCredits(options.quoteCredits),
       }),
       request_id: options.requestId ?? uuid(),
     });

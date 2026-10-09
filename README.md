@@ -976,6 +976,10 @@ npm run typecheck
 - `client.aiVideo`: `generate`, `avatar`, `dub`, `get`, `waitForJob`, with `quoteCredits`
   and an automatic `requestId`.
 - `generateIdaQ2(options)`: IDA Q Image 2, submit and poll.
+- Error messages keep the server's reason (`detail.error`) ahead of the no-charge note;
+  every 400 is a `ValidationError` (as in the Python SDK); 429 `DAILY_LIMIT` /
+  `TOO_MANY_ACTIVE` are thrown at once, not retried; `quoteCredits` that is NaN, infinite,
+  negative or not a number throws `ValidationError` before any request (`null` = unset).
 
 ### 1.12.0
 

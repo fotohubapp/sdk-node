@@ -380,3 +380,107 @@ test("generateIdaQ2 defaults and a failed job", async () => {
   assert.ok(e instanceof FotoHubError);
   assert.equal(e.code, "SAFETY_BLOCKED");
 });
+
+// ── review fixes ────────────────────────────────────────────────────────────
+
+const IDA_NOTE = "No credits were charged for this request.";
+
+for (const [status, detail, reason, cls] of [
+  [429, { error: "The IDA Q queue is full. Try again shortly.", code: "QUEUE_FULL", charged: false, message: IDA_NOTE, retry_after: 120 }, "queue is full", RateLimitError],
+  [400, { error: "Too many images for this resolution.", code: "INVALID_REQUEST", charged: false, message: "Your wallet was not charged for this request.", max_images: 1 }, "Too many images", ValidationError],
+  [422, { error: "num_images must be a whole number from 1 to 1 for HD / max.", code: "INVALID_REQUEST", charged: false, message: "Your wallet was not charged for this request." }, "num_images must be", ValidationError],
+]) {
+  test(`${status} ${detail.code}: the sentence error wins over the no-charge note`, async () => {
+    const t = make();
+    t.reply([status, { detail }]);
+    const e = await rejects(t.client.generateIdaQ2({ prompt: "a poster", size_tier: "HD", preset: "max" }));
+    assert.ok(e instanceof cls);
+    assert.ok(e.message.includes(reason), e.message);
+    assert.ok(e.message.endsWith(detail.message), e.message);
+    assert.equal(e.code, detail.code);
+    assert.equal(e.statusCode, status);
+  });
+}
+
+test("a code error keeps the message sentence (price_changed, feature_off)", async () => {
+  const t = make();
+  t.reply([409, WAVE_409]);
+  const e = await rejects(t.client.aiVideo.generate({ prompt: "a lighthouse", quoteCredits: 3 }));
+  assert.equal(e.message, WAVE_409.detail.message);
+  t.reply([422, { detail: { error: "feature_off", op: "x", message: "This tool is not available yet. You were not charged." } }]);
+  const f = await rejects(t.client.aiVideo.generate({ prompt: "a lighthouse" }));
+  assert.equal(f.message, "This tool is not available yet. You were not charged.");
+  assert.equal(f.code, "feature_off");
+});
+
+test("a sentence error without a message is used as is", async () => {
+  const t = make();
+  t.reply([403, { detail: { error: "Your plan does not include IDA Q Image 2.", code: "PLAN_REQUIRED" } }]);
+  const e = await rejects(t.client.generateIdaQ2({ prompt: "a poster" }));
+  assert.equal(e.message, "Your plan does not include IDA Q Image 2.");
+});
+
+test("400 INVALID_REQUEST is a ValidationError with statusCode 400", async () => {
+  const t = make();
+  t.reply([400, { detail: { error: "Invalid generation parameters.", code: "INVALID_REQUEST", charged: false } }]);
+  const e = await rejects(t.client.generateIdaQ2({ prompt: "a poster" }));
+  assert.ok(e instanceof ValidationError);
+  assert.equal(e.statusCode, 400);
+  assert.equal(e.code, "INVALID_REQUEST");
+  t.reply([400, { detail: "Bad request" }]);
+  const f = await rejects(t.client.aiVideo.get(JID));
+  assert.ok(f instanceof ValidationError);
+  assert.equal(f.statusCode, 400);
+  assert.equal(f.message, "Bad request");
+});
+
+for (const [name, body] of [
+  ["DAILY_LIMIT", { detail: { error: "Your plan's daily IDA Q image limit is used up.", code: "DAILY_LIMIT", charged: false, message: IDA_NOTE } }],
+  ["TOO_MANY_ACTIVE", { detail: { error: "You already have the maximum number of active IDA Q jobs.", code: "TOO_MANY_ACTIVE", charged: false, message: IDA_NOTE } }],
+  ["TOO_MANY_ACTIVE envelope", { error: { code: "TOO_MANY_ACTIVE", message: "You have too many jobs running or queued." }, charged: false }],
+]) {
+  test(`429 ${name} is not retried`, async () => {
+    const t = make(3);
+    t.reply([429, body, { "retry-after": "30" }], [429, body], [429, body], [429, body]);
+    const e = await rejects(t.client.generateIdaQ2({ prompt: "a poster" }));
+    assert.ok(e instanceof RateLimitError);
+    assert.equal(e.code, "TOO_MANY_ACTIVE" === name.split(" ")[0] ? "TOO_MANY_ACTIVE" : "DAILY_LIMIT");
+    assert.equal(t.calls.length, 1);
+  });
+}
+
+test("429 QUEUE_FULL is still retried with the same job_id", async () => {
+  const t = make(2);
+  const full = { detail: { error: "The IDA Q queue is full. Try again shortly.", code: "QUEUE_FULL", charged: false, message: IDA_NOTE, retry_after: 30 } };
+  t.reply([429, full, { "retry-after": "30" }], [202, { job_id: JID, status: "queued" }], [200, { job_id: JID, status: "completed", images: ["u"] }]);
+  const out = await t.client.generateIdaQ2({ prompt: "a poster", job_id: JID, poll_interval_seconds: 0 });
+  assert.deepEqual(out.images, ["u"]);
+  assert.equal(t.calls[0].body.job_id, JID);
+  assert.equal(t.calls[1].body.job_id, JID);
+});
+
+for (const bad of [NaN, Infinity, -Infinity, -1, "12", true]) {
+  test(`quoteCredits ${String(bad)} is refused before any request`, async () => {
+    const t = make();
+    const starts = [
+      () => t.client.upscalePro.video({ videoUrl: "https://example.com/c.mp4", quoteCredits: bad }),
+      () => t.client.aiVideo.generate({ prompt: "a lighthouse", quoteCredits: bad }),
+      () => t.client.aiVideo.avatar({ portrait: "https://example.com/p.png", consent: { accepted: true }, script: "hi", quoteCredits: bad }),
+      () => t.client.aiVideo.dub({ source: "https://example.com/c.mp4", languages: ["de"], quoteCredits: bad }),
+    ];
+    for (const start of starts) {
+      const e = await rejects(start());
+      assert.ok(e instanceof ValidationError, String(e));
+      assert.match(e.message, /quoteCredits/);
+    }
+    assert.equal(t.calls.length, 0);
+  });
+}
+
+test("quoteCredits 0 is sent and null is treated as unset", async () => {
+  const t = make();
+  await t.client.aiVideo.generate({ prompt: "a lighthouse", quoteCredits: 0 });
+  assert.equal(t.last().body.quote_credits, 0);
+  await t.client.upscalePro.video({ videoUrl: "https://example.com/c.mp4", quoteCredits: null });
+  assert.ok(!("quote_credits" in t.last().body));
+});
